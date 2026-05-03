@@ -42,6 +42,9 @@ const NEW_TOKEN_MIN_LP_USD = 50_000;
 const MAX_PER_NARRATIVE = 3;
 const PORTFOLIO_HEAT_CAP_PCT = 6;
 const SOL_RESERVE = 5;
+const MAX_POSITION_PORTFOLIO_PCT = 5;
+const MAX_POSITION_USD = 500;
+const MAX_PRE_ENTRY_PUMP_PCT = 300;
 
 export class RiskEngine {
   constructor(private db: AppDatabase | null = null) {}
@@ -79,6 +82,14 @@ export class RiskEngine {
     const firstWhalePrice = this.numberConfig(`token:${convergence.token_mint}:first_whale_price_usd`);
     if (firstWhalePrice && Math.abs(((entryPriceUsd - firstWhalePrice) / firstWhalePrice) * 100) > MAX_FIRST_WHALE_MOVE_PCT) {
       return { allowed: false, reason: "token moved more than 15% since first whale fill", phase, portfolioValueUsd };
+    }
+
+    const creationPrice = this.numberConfig(`token:${convergence.token_mint}:creation_price_usd`);
+    if (creationPrice && creationPrice > 0) {
+      const pumpPct = ((entryPriceUsd - creationPrice) / creationPrice) * 100;
+      if (pumpPct > MAX_PRE_ENTRY_PUMP_PCT) {
+        return { allowed: false, reason: `token already pumped ${Math.round(pumpPct)}% from creation (max ${MAX_PRE_ENTRY_PUMP_PCT}%)`, phase, portfolioValueUsd };
+      }
     }
 
     const honeypotLoss = this.numberConfig(`token:${convergence.token_mint}:honeypot_roundtrip_loss_pct`);
@@ -123,7 +134,11 @@ export class RiskEngine {
       return { allowed: false, reason: "SOL reserve below 5 SOL", phase, portfolioValueUsd };
     }
 
-    return { allowed: true, adjustedSizePct, phase, portfolioValueUsd, sizeUsd };
+    const hardCapUsd = Math.min(portfolioValueUsd * MAX_POSITION_PORTFOLIO_PCT / 100, MAX_POSITION_USD);
+    const finalSizeUsd = Math.min(sizeUsd, hardCapUsd);
+    const finalSizePct = (finalSizeUsd / portfolioValueUsd) * 100;
+
+    return { allowed: true, adjustedSizePct: finalSizePct, phase, portfolioValueUsd, sizeUsd: finalSizeUsd };
   }
 
   recordJupiterError(): void {

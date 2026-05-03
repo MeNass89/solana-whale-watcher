@@ -1,6 +1,7 @@
 import type { TradeRow } from "../storage/models/trades.js";
 import type { HeliusTransaction } from "../blockchain/helius-client.js";
 import type { WalletState } from "../blockchain/types.js";
+import type { ManipulationSignals } from "./manipulation-detector.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const LAMPORTS = 1e9;
@@ -173,4 +174,17 @@ function velocity(spanSeconds: number): number {
   if (spanSeconds <= 60 * 60) return 10;
   if (spanSeconds <= 2 * 60 * 60) return 5;
   return 0;
+}
+
+export function applyManipulationPenalty(rawScore: number, signals: ManipulationSignals): number {
+  let multiplier = 1.0;
+  if (signals.timeClusteringScore > 0.7) multiplier *= 0.4;
+  else if (signals.timeClusteringScore > 0.4) multiplier *= 0.7;
+  if (signals.sellPressureRatio > 0.4) multiplier *= 0.3;
+  else if (signals.sellPressureRatio > 0.2) multiplier *= 0.6;
+  if (signals.freshWalletFraction > 0.5) multiplier *= 0.3;
+  else if (signals.freshWalletFraction > 0.3) multiplier *= 0.6;
+  if (signals.coOccurrenceScore > 0.5) multiplier *= 0.3;
+  else if (signals.coOccurrenceScore > 0.25) multiplier *= 0.6;
+  return Math.max(0, Math.round(rawScore * multiplier));
 }

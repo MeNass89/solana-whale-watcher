@@ -1,12 +1,14 @@
 import { config } from "../config/index.js";
 import type { TokenResolver } from "../blockchain/token-resolver.js";
 import type { ITradeEvent } from "../blockchain/types.js";
+import type { AppDatabase } from "../storage/database.js";
 import type { ConvergenceModel, ConvergenceRow } from "../storage/models/convergences.js";
 import type { TokenModel } from "../storage/models/tokens.js";
 import type { TradeModel, TradeRow } from "../storage/models/trades.js";
 import type { WalletModel } from "../storage/models/wallets.js";
 import { passesMvpFilters } from "./filters.js";
-import { computeMvpScore } from "./scorer.js";
+import { computeMvpScore, applyManipulationPenalty } from "./scorer.js";
+import { computeManipulationSignals } from "./manipulation-detector.js";
 import { tradeExecutor } from "../execution/trade-executor.js";
 import { logger } from "../utils/logger.js";
 
@@ -16,7 +18,8 @@ export class ConvergenceEngine {
     private readonly convergences: ConvergenceModel,
     private readonly wallets: WalletModel,
     private readonly tokens: TokenModel,
-    private readonly resolver: TokenResolver
+    private readonly resolver: TokenResolver,
+    private readonly db?: AppDatabase
   ) {}
 
   async checkConvergence(newTrade: ITradeEvent): Promise<ConvergenceRow | null> {
@@ -31,8 +34,18 @@ export class ConvergenceEngine {
     const metadata = await this.resolver.resolve(newTrade.tokenMint).catch(() => ({ mint: newTrade.tokenMint }));
     if (!passesMvpFilters(newTrade.tokenMint, recentBuys, this.tokens, metadata)) return null;
 
+    const recentSells = this.trades.findByTokenInWindow(newTrade.tokenMint, since, "SELL");
+    if (recentSells.length > 0 && recentSells.length / (recentBuys.length + recentSells.length) > 0.3) return null;
+
     const total = totalUsd(recentBuys);
-    const score = computeMvpScore(recentBuys, this.wallets.scoresFor([...uniqueWallets]));
+    let score = computeMvpScore(recentBuys, this.wallets.scoresFor([...uniqueWallets]));
+
+    if (this.db) {
+      const signals = computeManipulationSignals(recentBuys, recentSells, this.wallets, this.db);
+      score = applyManipulationPenalty(score, signals);
+      if (score < 10) return null;
+    }
+
     let tier: "CRITICAL" | "NOTABLE" | "WATCH" = score >= 75 ? "CRITICAL" : score >= 40 ? "NOTABLE" : "WATCH";
 
     const tierWindowSeconds = tier === "CRITICAL" ? 30 * 60 : tier === "NOTABLE" ? 60 * 60 : windowSeconds;

@@ -48,7 +48,8 @@ interface TakeProfitLevel {
 type ExitHandler = (position: PositionRow, reason: string, sellPct: number, panicExit?: boolean) => Promise<void>;
 
 const FIRST_30_MIN_STOP_PCT = -8;
-const HARD_STOP_FLOOR_PCT = -25;
+const HARD_STOP_FLOOR_PCT = -15;
+const MAX_DOLLAR_LOSS_PORTFOLIO_PCT = 3;
 const HARD_STOP_CEILING_PCT = -45;
 const RUG_DROP_PCT = -60;
 const LIQUIDITY_DROP_PCT = -40;
@@ -89,7 +90,7 @@ export class PositionManager {
   }
 
   openPosition(input: OpenPositionInput): PositionRow {
-    const stopLossPrice = input.entryPriceUsd * 0.75;
+    const stopLossPrice = input.entryPriceUsd * 0.85;
     const result = this.requireDb()
       .prepare(
         `INSERT INTO positions
@@ -181,6 +182,9 @@ export class PositionManager {
 
   private async onPriceUpdate(position: PositionRow, priceUsd: number): Promise<void> {
     const now = unixNow();
+
+    if (await this.checkDollarStop(position, priceUsd)) return;
+
     const peak = Math.max(position.peak_price_usd ?? position.entry_price_usd, priceUsd);
     const profitPct = ((priceUsd - position.entry_price_usd) / position.entry_price_usd) * 100;
     const trailingActive = position.trailing_stop_active === 1 || profitPct >= TRAILING_ACTIVATION_PCT;
@@ -271,6 +275,29 @@ export class PositionManager {
          WHERE id = ?`
       )
       .run(priceUsd, peakPriceUsd, trailingActive ? 1 : 0, trailingPct, positionId);
+  }
+
+  private async checkDollarStop(position: PositionRow, priceUsd: number): Promise<boolean> {
+    const unrealizedLoss = position.amount_token * (position.entry_price_usd - priceUsd);
+    if (unrealizedLoss <= 0) return false;
+    const portfolioValue = this.portfolioValueUsd();
+    if (portfolioValue <= 0) return false;
+    if ((unrealizedLoss / portfolioValue) * 100 >= MAX_DOLLAR_LOSS_PORTFOLIO_PCT) {
+      await this.exit(position, "DOLLAR_LOSS_CAP", 100, true);
+      return true;
+    }
+    return false;
+  }
+
+  private portfolioValueUsd(): number {
+    const db = this.requireDb();
+    const openValue = (db.prepare(
+      `SELECT COALESCE(SUM(amount_token * COALESCE(current_price_usd, entry_price_usd)), 0) AS value
+       FROM positions WHERE status IN ('OPEN','PARTIAL')`
+    ).get() as { value: number }).value ?? 0;
+    const cashRow = db.prepare("SELECT value FROM execution_config WHERE key = 'paper_balance_usd'").get() as { value: string } | undefined;
+    const cash = cashRow ? Number(cashRow.value) : 10000;
+    return cash + openValue;
   }
 
   private listOpen(): PositionRow[] {
