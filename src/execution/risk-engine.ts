@@ -26,9 +26,9 @@ interface PhaseLimits {
 }
 
 const PHASE_LIMITS: Record<RiskPhase, PhaseLimits> = {
-  cold_start: { base: 0.5, notable: 0.75, critical: 1.0, cap: 3, maxExposure: 30, maxPositions: 6 },
-  validated: { base: 1.0, notable: 1.5, critical: 2.0, cap: 5, maxExposure: 40, maxPositions: 6 },
-  mature: { base: 1.5, notable: 2.25, critical: 3.0, cap: 5, maxExposure: 50, maxPositions: 6 }
+  cold_start: { base: 0.5, notable: 0.75, critical: 1.0, cap: 3, maxExposure: 40, maxPositions: 15 },
+  validated: { base: 1.0, notable: 1.5, critical: 2.0, cap: 5, maxExposure: 50, maxPositions: 15 },
+  mature: { base: 1.5, notable: 2.25, critical: 3.0, cap: 5, maxExposure: 60, maxPositions: 15 }
 };
 
 const MAX_POSITION_POOL_TVL_PCT = 0.5;
@@ -42,8 +42,8 @@ const NEW_TOKEN_MIN_LP_USD = 50_000;
 const MAX_PER_NARRATIVE = 3;
 const PORTFOLIO_HEAT_CAP_PCT = 6;
 const SOL_RESERVE = 5;
-const MAX_POSITION_PORTFOLIO_PCT = 5;
-const MAX_POSITION_USD = 500;
+const MAX_POSITION_PORTFOLIO_PCT = 3;
+const MAX_POSITION_USD = 3000;
 const MAX_PRE_ENTRY_PUMP_PCT = 300;
 
 export class RiskEngine {
