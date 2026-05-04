@@ -1,4 +1,6 @@
 import { config } from "../config/index.js";
+import { birdEyeClient } from "../blockchain/birdeye-client.js";
+import { dexScreenerClient } from "../blockchain/dexscreener-client.js";
 import type { AlertTier } from "../blockchain/types.js";
 import type { AppDatabase } from "../storage/database.js";
 import type { ConvergenceRow } from "../storage/models/convergences.js";
@@ -32,7 +34,7 @@ const PHASE_LIMITS: Record<RiskPhase, PhaseLimits> = {
 };
 
 const MAX_POSITION_POOL_TVL_PCT = 0.5;
-const MIN_POOL_TVL_USD = 100_000;
+const MIN_POOL_TVL_USD = 5_000;
 const MAX_HONEYPOT_ROUNDTRIP_LOSS_PCT = 8;
 const MAX_FIRST_WHALE_MOVE_PCT = 15;
 const MIN_WHALE_BUY_USD = 25_000;
@@ -54,7 +56,7 @@ export class RiskEngine {
     this.ensurePaperBalance();
   }
 
-  checkEntry(convergence: ConvergenceRow, trades: TradeRow[], entryPriceUsd: number): RiskCheck {
+  async checkEntry(convergence: ConvergenceRow, trades: TradeRow[], entryPriceUsd: number): Promise<RiskCheck> {
     const db = this.requireDb();
     const phase = this.phase();
     const limits = PHASE_LIMITS[phase];
@@ -63,15 +65,19 @@ export class RiskEngine {
     const volatility = this.numberConfig(`token:${convergence.token_mint}:realized_vol_24h_pct`);
     const volAdj = volatility && volatility > 0 ? Math.min(1, 80 / volatility) : 1;
     const drawdownHalve = this.stringConfig("drawdown_halve_sizes") === "true" ? 0.5 : 1;
-    const adjustedSizePct = Math.min(limits.cap, baseSizePct * volAdj * drawdownHalve);
-    const sizeUsd = (portfolioValueUsd * adjustedSizePct) / 100;
+    let adjustedSizePct = Math.min(limits.cap, baseSizePct * volAdj * drawdownHalve);
 
     const circuitBreaker = this.circuitBreakerReason(portfolioValueUsd);
     if (circuitBreaker) return { allowed: false, reason: circuitBreaker, phase, portfolioValueUsd };
 
-    const liquidityUsd = this.tokenLiquidity(convergence.token_mint);
+    const liquidityUsd = await this.tokenLiquidityLive(convergence.token_mint);
     if (liquidityUsd === null) return { allowed: false, reason: "pool TVL unavailable", phase, portfolioValueUsd };
-    if (liquidityUsd < MIN_POOL_TVL_USD) return { allowed: false, reason: "pool TVL below $100k", phase, portfolioValueUsd };
+    if (liquidityUsd < MIN_POOL_TVL_USD) return { allowed: false, reason: "pool TVL below $5k", phase, portfolioValueUsd };
+    if (liquidityUsd < 50_000) {
+      const memePenalty = Math.max(0.25, liquidityUsd / 50_000);
+      adjustedSizePct = Math.min(adjustedSizePct * memePenalty, limits.cap);
+    }
+    const sizeUsd = (portfolioValueUsd * adjustedSizePct) / 100;
     if ((sizeUsd / liquidityUsd) * 100 > MAX_POSITION_POOL_TVL_PCT) {
       return { allowed: false, reason: "position exceeds 0.5% of pool TVL", phase, portfolioValueUsd };
     }
@@ -105,7 +111,7 @@ export class RiskEngine {
       return { allowed: false, reason: "top 10 holders above 40% supply", phase, portfolioValueUsd };
     }
 
-    const tokenAgeHours = this.numberConfig(`token:${convergence.token_mint}:age_hours`);
+    const tokenAgeHours = await this.tokenAgeLive(convergence.token_mint);
     if (tokenAgeHours !== null && tokenAgeHours < MIN_TOKEN_AGE_HOURS && liquidityUsd < NEW_TOKEN_MIN_LP_USD) {
       return { allowed: false, reason: "token age below 24h and LP below $50k", phase, portfolioValueUsd };
     }
@@ -242,6 +248,26 @@ export class RiskEngine {
       | { liquidity_usd: number | null }
       | undefined;
     return row?.liquidity_usd ?? null;
+  }
+
+  async tokenLiquidityLive(mint: string): Promise<number | null> {
+    const overview = await birdEyeClient.getTokenOverview(mint);
+    if (overview?.liquidityUsd) return overview.liquidityUsd;
+    const pair = await dexScreenerClient.getBestPair(mint);
+    if (pair?.liquidityUsd) return pair.liquidityUsd;
+    return this.tokenLiquidity(mint);
+  }
+
+  async tokenAgeLive(mint: string): Promise<number | null> {
+    const overview = await birdEyeClient.getTokenOverview(mint);
+    if (overview?.createdAt) {
+      return (Date.now() / 1000 - overview.createdAt) / 3600;
+    }
+    const pair = await dexScreenerClient.getBestPair(mint);
+    if (pair?.pairCreatedAt) {
+      return (Date.now() - pair.pairCreatedAt) / (1000 * 3600);
+    }
+    return null;
   }
 
   private paperCashUsd(): number {

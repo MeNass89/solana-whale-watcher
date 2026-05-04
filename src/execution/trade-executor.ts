@@ -73,17 +73,17 @@ export class TradeExecutor {
     }
 
     const entryPrice = (await this.swaps.getPriceUsd(convergence.token_mint)) ?? initialPrice;
-    const risk = this.risk.checkEntry(convergence, trades, entryPrice);
+    const risk = await this.risk.checkEntry(convergence, trades, entryPrice);
     if (!risk.allowed || !risk.adjustedSizePct || !risk.sizeUsd) {
       logger.info({ convergenceId: convergence.id, reason: risk.reason }, "execution rejected by risk engine");
       await this.notify("ENTRY_REJECTED", convergence, [{ name: "Reason", value: risk.reason ?? "unknown", inline: false }]);
       return;
     }
 
-    const liquidityUsd = this.liquidityUsd(convergence.token_mint);
+    const liquidityUsd = await this.risk.tokenLiquidityLive(convergence.token_mint);
     const slippageBps = this.swaps.slippageBpsForLiquidity(liquidityUsd);
     if (slippageBps === null) {
-      logger.info({ mint: convergence.token_mint, liquidityUsd }, "execution skipped; liquidity tier below $50k");
+      logger.info({ mint: convergence.token_mint, liquidityUsd }, "execution skipped; liquidity below $5k");
       return;
     }
 

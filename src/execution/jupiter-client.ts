@@ -76,6 +76,7 @@ export class JupiterClient {
     if (liquidityUsd > 500_000) return 100;
     if (liquidityUsd >= 100_000) return 300;
     if (liquidityUsd >= 50_000) return 500;
+    if (liquidityUsd >= 5_000) return 2500;
     return null;
   }
 
