@@ -1,5 +1,5 @@
 import { config } from "../config/index.js";
-import { getThreshold } from "../config/thresholds.js";
+import { getMinWalletsForTier, getThreshold } from "../config/thresholds.js";
 import type { TokenResolver } from "../blockchain/token-resolver.js";
 import type { ITradeEvent } from "../blockchain/types.js";
 import type { AppDatabase } from "../storage/database.js";
@@ -52,6 +52,11 @@ export class ConvergenceEngine {
     }
 
     let tier: "CRITICAL" | "NOTABLE" | "WATCH" = score >= 75 ? "CRITICAL" : score >= 40 ? "NOTABLE" : "WATCH";
+
+    if (uniqueWallets.size < getMinWalletsForTier(tier)) {
+      if (tier === "CRITICAL") tier = "NOTABLE";
+      else if (tier === "NOTABLE") tier = "WATCH";
+    }
 
     const tierWindowSeconds = tier === "CRITICAL" ? 30 * 60 : tier === "NOTABLE" ? 60 * 60 : windowSeconds;
     if (tierWindowSeconds < windowSeconds) {
