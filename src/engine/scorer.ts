@@ -13,6 +13,9 @@ export interface WalletMetrics {
   totalTrades: number;
   realizedPnlSol: number;
   state: WalletState;
+  isMev: boolean;
+  isWashTrader: boolean;
+  medianHoldTimeSec: number | null;
 }
 
 interface TokenPosition {
@@ -22,6 +25,62 @@ interface TokenPosition {
   sellRevenueSol: number;
   sellAmount: number;
   closed: boolean;
+}
+
+const MEV_HOLD_TIME_THRESHOLD_SEC = 30;
+const WASH_TRADE_WINDOW_SEC = 5 * 60;
+const WASH_TRADE_FRACTION_THRESHOLD = 0.2;
+
+function computeHoldTimes(trades: TradeRow[]): number[] {
+  const holdTimes: number[] = [];
+  const buysByMint = new Map<string, TradeRow[]>();
+  for (const t of trades) {
+    if (t.trade_type === "BUY") {
+      if (!buysByMint.has(t.token_mint)) buysByMint.set(t.token_mint, []);
+      buysByMint.get(t.token_mint)!.push(t);
+    }
+  }
+  for (const t of trades) {
+    if (t.trade_type !== "SELL") continue;
+    const buys = buysByMint.get(t.token_mint);
+    if (!buys || buys.length === 0) continue;
+    const lastBuy = buys.filter((b) => b.block_time <= t.block_time).pop();
+    if (lastBuy) holdTimes.push(t.block_time - lastBuy.block_time);
+  }
+  return holdTimes;
+}
+
+function median(arr: number[]): number | null {
+  if (arr.length === 0) return null;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function detectWashTrading(trades: TradeRow[]): boolean {
+  let washCount = 0;
+  let roundTripCount = 0;
+  const sellsByMint = new Map<string, TradeRow[]>();
+  for (const t of trades) {
+    if (t.trade_type === "SELL") {
+      if (!sellsByMint.has(t.token_mint)) sellsByMint.set(t.token_mint, []);
+      sellsByMint.get(t.token_mint)!.push(t);
+    }
+  }
+  for (const t of trades) {
+    if (t.trade_type !== "BUY") continue;
+    const sells = sellsByMint.get(t.token_mint);
+    if (!sells) continue;
+    const matchingSell = sells.find((s) => s.block_time >= t.block_time && s.block_time - t.block_time <= WASH_TRADE_WINDOW_SEC);
+    if (matchingSell) {
+      washCount++;
+      roundTripCount++;
+    } else {
+      const laterSell = sells.find((s) => s.block_time >= t.block_time);
+      if (laterSell) roundTripCount++;
+    }
+  }
+  return roundTripCount > 0 && washCount / roundTripCount > WASH_TRADE_FRACTION_THRESHOLD;
 }
 
 export function computeWalletMetrics(
@@ -34,10 +93,18 @@ export function computeWalletMetrics(
   const closed = positions.filter((p) => p.closed || p.sellAmount > 0);
   const swapCount = heliusTxs.filter((tx) => tx.type === "SWAP").length;
   const totalTrades = Math.max(trades.length, swapCount);
+  const holdTimes = computeHoldTimes(trades);
+  const medianHoldTime = median(holdTimes);
+  const isMev = medianHoldTime !== null && medianHoldTime < MEV_HOLD_TIME_THRESHOLD_SEC;
+  const isWashTrader = detectWashTrading(trades);
+
+  if (isMev || isWashTrader) {
+    return { score: 5, winRate: null, avgRoi: null, totalTrades, realizedPnlSol: 0, state: "DEMOTED", isMev, isWashTrader, medianHoldTimeSec: medianHoldTime };
+  }
 
   if (closed.length === 0) {
     const activityScore = swapCount > 5 ? 45 : swapCount > 0 ? 38 : heliusTxs.length > 0 ? 28 : 15;
-    return { score: activityScore, winRate: null, avgRoi: null, totalTrades, realizedPnlSol: 0, state: deriveState(activityScore, currentState) };
+    return { score: activityScore, winRate: null, avgRoi: null, totalTrades, realizedPnlSol: 0, state: deriveState(activityScore, currentState), isMev: false, isWashTrader: false, medianHoldTimeSec: null };
   }
 
   let wins = 0;
@@ -64,7 +131,7 @@ export function computeWalletMetrics(
   const score = clamp(Math.round(pnlScore + wrScore + roiScore + recencyScore + volumeScore), 0, 100);
   const state = deriveState(score, currentState);
 
-  return { score, winRate: round2(winRate), avgRoi: round2(avgRoi), totalTrades, realizedPnlSol: round2(totalPnl), state };
+  return { score, winRate: round2(winRate), avgRoi: round2(avgRoi), totalTrades, realizedPnlSol: round2(totalPnl), state, isMev: false, isWashTrader: false, medianHoldTimeSec: medianHoldTime };
 }
 
 function buildPositions(trades: TradeRow[], heliusTxs: HeliusTransaction[], walletAddress: string): TokenPosition[] {
