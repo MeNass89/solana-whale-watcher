@@ -34,7 +34,7 @@ const PHASE_LIMITS: Record<RiskPhase, PhaseLimits> = {
 };
 
 const MAX_POSITION_POOL_TVL_PCT = 0.5;
-const MIN_POOL_TVL_USD = 5_000;
+const MIN_POOL_TVL_USD = 25_000;
 const MAX_HONEYPOT_ROUNDTRIP_LOSS_PCT = 8;
 const MAX_FIRST_WHALE_MOVE_PCT = 15;
 const MIN_WHALE_BUY_USD = 25_000;
@@ -45,7 +45,7 @@ const MAX_PER_NARRATIVE = 3;
 const PORTFOLIO_HEAT_CAP_PCT = 6;
 const SOL_RESERVE = 5;
 const MAX_POSITION_PORTFOLIO_PCT = 3;
-const MAX_POSITION_USD = 3000;
+const MAX_POSITION_USD = 2000;
 const MAX_PRE_ENTRY_PUMP_PCT = 300;
 
 export class RiskEngine {
@@ -63,7 +63,13 @@ export class RiskEngine {
     const portfolioValueUsd = this.portfolioValueUsd();
     const baseSizePct = sizeForTier(convergence.tier, limits);
     const volatility = this.numberConfig(`token:${convergence.token_mint}:realized_vol_24h_pct`);
-    const volAdj = volatility && volatility > 0 ? Math.min(1, 80 / volatility) : 1;
+    const volAdj = volatility && volatility > 0 ? Math.min(1, 50 / volatility) : 1;
+    if (volatility !== null && volatility > 300) {
+      return { allowed: false, reason: `volatility ${volatility.toFixed(0)}% exceeds 300% ceiling`, phase, portfolioValueUsd };
+    }
+    if (volatility === null || volatility === 0) {
+      return { allowed: false, reason: "volatility data unavailable — cannot size position", phase, portfolioValueUsd };
+    }
     const drawdownHalve = this.stringConfig("drawdown_halve_sizes") === "true" ? 0.5 : 1;
     let adjustedSizePct = Math.min(limits.cap, baseSizePct * volAdj * drawdownHalve);
 
@@ -72,7 +78,7 @@ export class RiskEngine {
 
     const liquidityUsd = await this.tokenLiquidityLive(convergence.token_mint);
     if (liquidityUsd === null) return { allowed: false, reason: "pool TVL unavailable", phase, portfolioValueUsd };
-    if (liquidityUsd < MIN_POOL_TVL_USD) return { allowed: false, reason: "pool TVL below $5k", phase, portfolioValueUsd };
+    if (liquidityUsd < MIN_POOL_TVL_USD) return { allowed: false, reason: `pool TVL $${Math.round(liquidityUsd)} below $${MIN_POOL_TVL_USD / 1000}k minimum`, phase, portfolioValueUsd };
     if (liquidityUsd < 50_000) {
       const memePenalty = Math.max(0.25, liquidityUsd / 50_000);
       adjustedSizePct = Math.min(adjustedSizePct * memePenalty, limits.cap);
