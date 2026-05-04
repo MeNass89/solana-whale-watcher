@@ -50,6 +50,14 @@ export class TradeExecutor {
       return;
     }
 
+    const existingPosition = this.requireDb()
+      .prepare("SELECT id FROM positions WHERE token_mint = ? AND status IN ('OPEN','PARTIAL')")
+      .get(convergence.token_mint) as { id: number } | undefined;
+    if (existingPosition) {
+      logger.info({ mint: convergence.token_mint, positionId: existingPosition.id }, "execution skipped; open position already exists for this token");
+      return;
+    }
+
     if (this.isStale(convergence)) {
       logger.info({ convergenceId: convergence.id, tier: convergence.tier }, "execution skipped for stale convergence");
       return;
@@ -83,7 +91,7 @@ export class TradeExecutor {
     const liquidityUsd = await this.risk.tokenLiquidityLive(convergence.token_mint);
     const slippageBps = this.swaps.slippageBpsForLiquidity(liquidityUsd);
     if (slippageBps === null) {
-      logger.info({ mint: convergence.token_mint, liquidityUsd }, "execution skipped; liquidity below $5k");
+      logger.info({ mint: convergence.token_mint, liquidityUsd }, "execution skipped; liquidity below minimum");
       return;
     }
 
