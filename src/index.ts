@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import { PublicKey } from "@solana/web3.js";
 import { config } from "./config/index.js";
+import { DiscordAlerter } from "./alerts/discord.js";
 import { buildServer } from "./api/server.js";
 import { HeliusClient } from "./blockchain/helius-client.js";
 import { TokenResolver } from "./blockchain/token-resolver.js";
 import { WalletMonitor } from "./blockchain/wallet-monitor.js";
 import { AlertManager } from "./engine/alert-manager.js";
 import { ConvergenceEngine } from "./engine/convergence.js";
+import { checkWebhookHealth } from "./jobs/webhook-health.js";
 import { runPriceTracker } from "./jobs/price-tracker.js";
 import { runTokenMetadata } from "./jobs/token-metadata.js";
 import { runWalletScorer } from "./jobs/wallet-scorer.js";
@@ -69,6 +71,13 @@ async function main(): Promise<void> {
     const now = new Date();
     if (now.getHours() === 9 && now.getMinutes() === 43) scorerJob();
   }, 60 * 1000);
+
+  const webhookHealthJob = () => checkWebhookHealth(helius, config.helius.webhookId, config.server.publicWebhookUrl, new DiscordAlerter(), wallets).catch((err) => {
+    logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "webhook-health: job failed");
+  });
+  setInterval(webhookHealthJob, 15 * 60 * 1000);
+  setTimeout(webhookHealthJob, 120_000);
+
   setInterval(() => {
     engine.retryPendingExecutions().catch((err) => {
       logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "convergence execution retry failed");

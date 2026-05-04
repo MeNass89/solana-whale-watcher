@@ -65,6 +65,15 @@ export class HeliusClient implements IChainMonitor {
     });
   }
 
+  async getWebhook(webhookId: string): Promise<{ webhookID: string; webhookURL: string; accountAddresses: string[]; webhookType: string } | null> {
+    if (!this.apiKey || !webhookId) return null;
+    try {
+      return await this.request<{ webhookID: string; webhookURL: string; accountAddresses: string[]; webhookType: string }>(`/v0/webhooks/${webhookId}`, { method: "GET" });
+    } catch {
+      return null;
+    }
+  }
+
   async getWalletTransactions(address: string, limit = 100): Promise<HeliusTransaction[]> {
     if (!this.apiKey) return [];
     const results: HeliusTransaction[] = [];
