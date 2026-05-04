@@ -3,7 +3,8 @@ import type { AppDatabase } from "../storage/database.js";
 import { logger } from "../utils/logger.js";
 import { unixNow } from "../utils/helpers.js";
 import type { JupiterClient } from "./jupiter-client.js";
-import { jupiterClient } from "./jupiter-client.js";
+import { isSanePrice, isSanePriceChange, jupiterClient } from "./jupiter-client.js";
+import { auditOpenPositions } from "./position-auditor.js";
 
 export interface PositionRow {
   id: number;
@@ -76,6 +77,12 @@ export class PositionManager {
 
   start(): void {
     if (this.timer) return;
+    if (this.db) {
+      const audit = auditOpenPositions(this.db);
+      if (audit.quarantined > 0) {
+        logger.warn({ quarantined: audit.quarantined, reasons: audit.reasons }, "startup audit quarantined positions");
+      }
+    }
     this.timer = setInterval(() => {
       this.checkOpenPositions().catch((error) =>
         logger.error({ err: error instanceof Error ? error : new Error(String(error)) }, "position manager tick failed")
@@ -126,7 +133,7 @@ export class PositionManager {
       const positions = this.listOpen();
       for (const position of positions) {
         const price = await this.priceClient.getPriceUsd(position.token_mint);
-        if (price === null || price <= 0) {
+        if (price === null) {
           const count = (this.nullPriceCounts.get(position.id) ?? 0) + 1;
           this.nullPriceCounts.set(position.id, count);
           if (count >= MAX_CONSECUTIVE_NULL_PRICES) {
@@ -135,6 +142,14 @@ export class PositionManager {
             await this.exit(position, "PRICE_FEED_DEAD", 100, true);
             this.nullPriceCounts.delete(position.id);
           }
+          continue;
+        }
+        if (!isSanePrice(price)) {
+          logger.warn({ mint: position.token_mint, currentPrice: price }, "price update rejected: outside sane bounds");
+          continue;
+        }
+        if (position.current_price_usd && !isSanePriceChange(position.current_price_usd, price)) {
+          logger.warn({ mint: position.token_mint, old: position.current_price_usd, new: price }, "price update rejected: change exceeds 100x in single tick");
           continue;
         }
         this.nullPriceCounts.delete(position.id);
