@@ -18,6 +18,19 @@ const QUOTE_MAX_AGE_MS = 3_000;
 const SEND_INTERVAL_MS = 500;
 const CONFIRM_TIMEOUT_MS = 60_000;
 const TIP_HARD_CAP_LAMPORTS = 15_000_000;
+const MIN_SANE_PRICE_USD = 1e-15;
+const MAX_SANE_PRICE_USD = 1e6;
+const MAX_PRICE_CHANGE_RATIO = 100;
+
+function isSanePrice(price: number): boolean {
+  return Number.isFinite(price) && price > MIN_SANE_PRICE_USD && price < MAX_SANE_PRICE_USD;
+}
+
+function isSanePriceChange(oldPrice: number, newPrice: number): boolean {
+  if (!isSanePrice(oldPrice) || !isSanePrice(newPrice)) return false;
+  const ratio = Math.max(newPrice / oldPrice, oldPrice / newPrice);
+  return ratio < MAX_PRICE_CHANGE_RATIO;
+}
 
 export interface SwapParams {
   inputMint: string;
@@ -97,7 +110,12 @@ export class JupiterClient {
       const outAmount = Number(raw.outAmount);
       const decimals = quoteTokenDecimals(raw, mint, "output") ?? (await this.tokenDecimals(mint));
       if (!outAmount || !Number.isFinite(outAmount)) return null;
-      return 1 / (outAmount / 10 ** decimals);
+      const price = 1 / (outAmount / 10 ** decimals);
+      if (!isSanePrice(price)) {
+        logger.warn({ mint, price }, "getPriceUsd: price outside sane bounds, returning null");
+        return null;
+      }
+      return price;
     } catch {
       return null;
     }
@@ -176,9 +194,16 @@ export class JupiterClient {
     const inputAmount = quote
       ? await this.rawAmountToUi(params.inputMint, BigInt(quote.inAmount), quote.inputDecimals)
       : await this.rawAmountToUi(params.inputMint, params.amountLamports);
-    const outputAmount = quote
-      ? await this.rawAmountToUi(params.outputMint, BigInt(quote.outAmount), quote.outputDecimals)
-      : await this.fallbackOutputAmount(params, inputAmount);
+    let outputAmount: number;
+    if (quote) {
+      outputAmount = await this.rawAmountToUi(params.outputMint, BigInt(quote.outAmount), quote.outputDecimals);
+    } else {
+      outputAmount = await this.fallbackOutputAmount(params, inputAmount);
+      if (!Number.isFinite(outputAmount) || outputAmount <= 0 || outputAmount > 1e30) {
+        logger.warn({ inputMint: params.inputMint, outputMint: params.outputMint, outputAmount }, "paper swap: fallback produced insane output amount, rejecting");
+        throw new Error("Paper swap pricing produced invalid amount");
+      }
+    }
 
     return {
       txSignature: `paper-${Date.now()}`,
@@ -400,5 +425,7 @@ function base58Encode(bytes: Uint8Array): string {
   for (let index = digits.length - 1; index >= 0; index -= 1) encoded += alphabet[digits[index]];
   return encoded;
 }
+
+export { isSanePrice, isSanePriceChange };
 
 export const jupiterClient = new JupiterClient();
