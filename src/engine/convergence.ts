@@ -1,4 +1,5 @@
 import { config } from "../config/index.js";
+import { getThreshold } from "../config/thresholds.js";
 import type { TokenResolver } from "../blockchain/token-resolver.js";
 import type { ITradeEvent } from "../blockchain/types.js";
 import type { AppDatabase } from "../storage/database.js";
@@ -10,6 +11,7 @@ import { passesMvpFilters } from "./filters.js";
 import { computeMvpScore, applyManipulationPenalty } from "./scorer.js";
 import { computeManipulationSignals } from "./manipulation-detector.js";
 import { tradeExecutor } from "../execution/trade-executor.js";
+import { discoverCoBuyers } from "../jobs/co-buyer-scanner.js";
 import { logger } from "../utils/logger.js";
 
 export class ConvergenceEngine {
@@ -29,7 +31,10 @@ export class ConvergenceEngine {
     const since = Math.floor(Date.now() / 1000) - windowSeconds;
     const recentBuys = this.trades.findByTokenInWindow(newTrade.tokenMint, since, "BUY");
     const uniqueWallets = new Set(recentBuys.map((trade) => trade.wallet_address));
-    if (uniqueWallets.size < config.convergence.mvpThreshold) return null;
+    const totalActive = this.wallets.countActive();
+    const coreCount = this.wallets.countByState("ACTIVE");
+    const threshold = getThreshold(coreCount, totalActive);
+    if (uniqueWallets.size < threshold) return null;
 
     const metadata = await this.resolver.resolve(newTrade.tokenMint).catch(() => ({ mint: newTrade.tokenMint }));
     if (!passesMvpFilters(newTrade.tokenMint, recentBuys, this.tokens, metadata)) return null;
@@ -52,7 +57,7 @@ export class ConvergenceEngine {
     if (tierWindowSeconds < windowSeconds) {
       const tierSince = Math.floor(Date.now() / 1000) - tierWindowSeconds;
       const tierWallets = new Set(recentBuys.filter((t) => t.block_time >= tierSince).map((t) => t.wallet_address));
-      if (tierWallets.size < config.convergence.mvpThreshold) {
+      if (tierWallets.size < threshold) {
         tier = tier === "CRITICAL" ? "NOTABLE" : "WATCH";
       }
     }
@@ -87,6 +92,12 @@ export class ConvergenceEngine {
       this.convergences.markOutcome(convergence.id, "FAILED");
       logger.error({ error, convergenceId: convergence.id, attempt }, "trade execution failed for convergence");
     });
+
+    if (this.db) {
+      discoverCoBuyers(this.db, this.wallets, convergence.token_mint, convergence.first_trade_at, config.convergence.windowMinutes).catch((error) => {
+        logger.warn({ err: error instanceof Error ? error : new Error(String(error)) }, "co-buyer scan failed");
+      });
+    }
   }
 }
 
