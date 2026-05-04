@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { verifyHeliusHmac } from "../middleware/hmac.js";
-import { parseEnhancedTransactions } from "../../blockchain/transaction-parser.js";
+import { parseEnhancedTransactions, isRapidReversal } from "../../blockchain/transaction-parser.js";
 import type { AlertManager } from "../../engine/alert-manager.js";
 import type { ConvergenceEngine } from "../../engine/convergence.js";
 import type { ConvergenceModel } from "../../storage/models/convergences.js";
@@ -31,6 +31,10 @@ export async function registerWebhookRoutes(
 
     for (const trade of parsedTrades) {
       const inserted = deps.trades.insert(trade);
+      if (isRapidReversal(trade)) {
+        logger.info({ wallet: logWallet(trade.walletAddress), token: trade.tokenMint, type: trade.tradeType }, "rapid-reversal filtered (MEV suspect)");
+        continue;
+      }
       if (!inserted) continue;
       deps.wallets.markTrade(trade.walletAddress, trade.blockTime);
       logger.info({ wallet: logWallet(trade.walletAddress), token: trade.tokenMint, type: trade.tradeType }, "trade ingested");
