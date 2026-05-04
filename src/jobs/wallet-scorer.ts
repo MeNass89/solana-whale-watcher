@@ -1,4 +1,5 @@
 import type { HeliusClient } from "../blockchain/helius-client.js";
+import { birdEyeClient } from "../blockchain/birdeye-client.js";
 import type { TradeModel } from "../storage/models/trades.js";
 import type { WalletModel } from "../storage/models/wallets.js";
 import type { WalletMonitor } from "../blockchain/wallet-monitor.js";
@@ -25,6 +26,8 @@ export async function runWalletScorer(
   const since = Math.floor(Date.now() / 1000) - THIRTY_DAYS_SEC;
   let promoted = 0;
   let demoted = 0;
+  let mevFlagged = 0;
+  let washFlagged = 0;
 
   for (const wallet of queue) {
     try {
@@ -32,7 +35,22 @@ export async function runWalletScorer(
       const heliusTxs = await helius.getWalletTransactions(wallet.address, HELIUS_TX_LIMIT);
 
       const metrics = computeWalletMetrics(dbTrades, heliusTxs, wallet.address, wallet.state);
+      const externalPnl = await birdEyeClient.getWalletPnl(wallet.address);
       const oldState = wallet.state;
+
+      if (metrics.isMev) {
+        mevFlagged++;
+        logger.warn({
+          address: wallet.address.substring(0, 12),
+          medianHoldTime: metrics.medianHoldTimeSec
+        }, "wallet-scorer: MEV bot detected; demoting");
+      }
+      if (metrics.isWashTrader) {
+        washFlagged++;
+        logger.warn({
+          address: wallet.address.substring(0, 12)
+        }, "wallet-scorer: wash trader detected; demoting");
+      }
 
       wallets.updateScore(wallet.address, {
         score: metrics.score,
@@ -52,6 +70,11 @@ export async function runWalletScorer(
         avgRoi: metrics.avgRoi,
         trades: metrics.totalTrades,
         pnl: metrics.realizedPnlSol,
+        birdeyePnlUsd: externalPnl?.totalPnl,
+        birdeyePnlPct: externalPnl?.totalPnlPercent,
+        mev: metrics.isMev,
+        wash: metrics.isWashTrader,
+        holdTime: metrics.medianHoldTimeSec,
         transition: oldState !== metrics.state ? `${oldState} → ${metrics.state}` : metrics.state,
       }, "wallet-scorer: scored");
     } catch (error) {
@@ -77,5 +100,5 @@ export async function runWalletScorer(
     }
   }
 
-  logger.info({ scored: queue.length, promoted, demoted }, "wallet-scorer: batch complete");
+  logger.info({ scored: queue.length, promoted, demoted, mevFlagged, washFlagged }, "wallet-scorer: batch complete");
 }

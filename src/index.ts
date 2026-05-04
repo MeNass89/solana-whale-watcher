@@ -42,7 +42,7 @@ async function main(): Promise<void> {
   const convergences = new ConvergenceModel(db);
   const tokens = new TokenModel(db);
   const resolver = new TokenResolver(tokens);
-  const engine = new ConvergenceEngine(trades, convergences, wallets, tokens, resolver);
+  const engine = new ConvergenceEngine(trades, convergences, wallets, tokens, resolver, db);
   const alerts = new AlertManager(convergences);
   riskEngine.configure(db);
   tradeExecutor.configure({ db, risk: riskEngine, positions: positionManager });
