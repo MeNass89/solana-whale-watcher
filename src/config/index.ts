@@ -21,6 +21,7 @@ loadDotEnv();
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HELIUS_API_KEY: z.string().default(""),
+  BIRDEYE_API_KEY: z.string().default(""),
   HELIUS_WEBHOOK_SECRET: z.string().min(1).default("dev-webhook-secret"),
   HELIUS_WEBHOOK_ID: z.string().optional().default(""),
   DISCORD_WEBHOOK_URL: z.string().url().optional().or(z.literal("")).default(""),
@@ -70,6 +71,9 @@ export const config = {
     apiKey: env.HELIUS_API_KEY,
     webhookSecret: env.HELIUS_WEBHOOK_SECRET,
     webhookId: env.HELIUS_WEBHOOK_ID
+  },
+  birdeye: {
+    apiKey: env.BIRDEYE_API_KEY
   },
   discord: {
     webhookUrl: env.DISCORD_WEBHOOK_URL,
