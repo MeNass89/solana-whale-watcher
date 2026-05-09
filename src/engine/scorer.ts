@@ -104,7 +104,7 @@ export function computeWalletMetrics(
 
   if (closed.length === 0) {
     const activityScore = swapCount > 5 ? 45 : swapCount > 0 ? 38 : heliusTxs.length > 0 ? 28 : 15;
-    return { score: activityScore, winRate: null, avgRoi: null, totalTrades, realizedPnlSol: 0, state: deriveState(activityScore, currentState), isMev: false, isWashTrader: false, medianHoldTimeSec: null };
+    return { score: activityScore, winRate: null, avgRoi: null, totalTrades, realizedPnlSol: 0, state: deriveState(activityScore), isMev: false, isWashTrader: false, medianHoldTimeSec: null };
   }
 
   let wins = 0;
@@ -129,7 +129,7 @@ export function computeWalletMetrics(
   const volumeScore = clamp(normalize(closed.length, 0, 20), 0, 100) * 0.1;
 
   const score = clamp(Math.round(pnlScore + wrScore + roiScore + recencyScore + volumeScore), 0, 100);
-  const state = deriveState(score, currentState);
+  const state = deriveState(score);
 
   return { score, winRate: round2(winRate), avgRoi: round2(avgRoi), totalTrades, realizedPnlSol: round2(totalPnl), state, isMev: false, isWashTrader: false, medianHoldTimeSec: medianHoldTime };
 }
@@ -202,7 +202,7 @@ function computeRecency(trades: TradeRow[], heliusTxs: HeliusTransaction[] = [])
   return 0;
 }
 
-function deriveState(score: number, current: WalletState): WalletState {
+function deriveState(score: number): WalletState {
   if (score >= 50) return "ACTIVE";
   if (score >= 35) return "PROBATION";
   if (score >= 15) return "DORMANT";

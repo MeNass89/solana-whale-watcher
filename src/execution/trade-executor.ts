@@ -1,6 +1,5 @@
 import { config } from "../config/index.js";
 import { DiscordAlerter } from "../alerts/discord.js";
-import type { AlertTier } from "../blockchain/types.js";
 import type { AppDatabase } from "../storage/database.js";
 import type { ConvergenceRow } from "../storage/models/convergences.js";
 import type { TradeRow } from "../storage/models/trades.js";

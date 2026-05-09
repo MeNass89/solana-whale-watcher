@@ -1,4 +1,3 @@
-import { config } from "../config/index.js";
 import { HeliusClient } from "../blockchain/helius-client.js";
 import type { AppDatabase } from "../storage/database.js";
 import type { TokenModel } from "../storage/models/tokens.js";
