@@ -1,0 +1,30 @@
+language: en-US
+tone_instructions: "Be direct and surgical. Flag real bugs, security issues, race conditions, MEV/sandwich risks, incorrect token math, and slippage miscalculations. Skip stylistic nitpicks unless they affect correctness."
+early_access: false
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!dist/**"
+    - "!**/*.lock"
+    - "!**/*.log"
+    - "!data/**"
+    - "!coverage/**"
+  path_instructions:
+    - path: "src/execution/**"
+      instructions: "Trade execution path (paper but logic must be production-grade). Flag any code that could corrupt P&L, miscalculate slippage, or double-execute. Watch for token decimals mismatches and lamport-vs-SOL conversion bugs."
+    - path: "src/engine/**"
+      instructions: "Convergence + scoring. Flag math errors, off-by-one on time windows, and divergent scoring between live and backtest paths."
+    - path: "src/blockchain/**"
+      instructions: "Solana RPC + DEX clients. Flag missing rate-limit handling, silent error swallowing, and incorrect parsing of token amounts (decimals)."
+
+chat:
+  auto_reply: true
