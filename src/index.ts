@@ -72,9 +72,18 @@ async function main(): Promise<void> {
   }
 
   // Wallet scorer: daily at 9:43 (aligned with finance-review), also 60s after startup
-  const scorerJob = () => runWalletScorer(wallets, trades, helius, monitor).catch((err) => {
-    logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "wallet-scorer: job failed");
-  });
+  let scorerJobRunning = false;
+  const scorerJob = async () => {
+    if (scorerJobRunning) return;
+    scorerJobRunning = true;
+    try {
+      await runWalletScorer(wallets, trades, helius, monitor);
+    } catch (err) {
+      logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "wallet-scorer: job failed");
+    } finally {
+      scorerJobRunning = false;
+    }
+  };
   setTimeout(scorerJob, 60_000);
   setInterval(() => {
     const now = new Date();
