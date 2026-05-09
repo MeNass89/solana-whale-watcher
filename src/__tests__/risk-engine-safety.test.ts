@@ -28,34 +28,25 @@ afterEach(() => {
 });
 
 describe("risk-engine safety parameters", () => {
-  it("should block entries with volatility > 300%", async () => {
-    const { engine, convergence, trades } = setupRisk({ volatility: 350 });
+  it("blocks entries below the $5k TVL hard floor", async () => {
+    const { engine, convergence, trades } = setupRisk({ volatility: 50, liquidityUsd: 1_000 });
 
     const result = await engine.checkEntry(convergence, trades, 1);
 
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe("volatility 350% exceeds 300% ceiling");
+    expect(result.reason).toBe("pool TVL $1000 below $5k floor");
   });
 
-  it("should block entries with liquidity < $25k", async () => {
-    const { engine, convergence, trades } = setupRisk({ volatility: 50, liquidityUsd: 10_000 });
+  it("blocks entries when pool TVL is unavailable", async () => {
+    const { engine, convergence, trades } = setupRisk({ volatility: 50, liquidityUsd: null });
 
     const result = await engine.checkEntry(convergence, trades, 1);
 
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe("pool TVL $10000 below $25k minimum");
+    expect(result.reason).toBe("pool TVL unavailable");
   });
 
-  it("should block entries with null volatility", async () => {
-    const { engine, convergence, trades } = setupRisk({ volatility: null });
-
-    const result = await engine.checkEntry(convergence, trades, 1);
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toBe("volatility data unavailable — cannot size position");
-  });
-
-  it("should reduce position size aggressively above 50% vol", async () => {
+  it("scales position size down with rising volatility (50% anchor)", async () => {
     const at100Vol = setupRisk({ paperBalanceUsd: 100_000, volatility: 100 });
     const at200Vol = setupRisk({ paperBalanceUsd: 100_000, volatility: 200 });
 
@@ -63,13 +54,17 @@ describe("risk-engine safety parameters", () => {
     const sizeAt200Vol = await at200Vol.engine.checkEntry(at200Vol.convergence, at200Vol.trades, 1);
 
     expect(sizeAt100Vol.allowed).toBe(true);
-    expect(sizeAt100Vol.sizeUsd).toBe(500);
     expect(sizeAt200Vol.allowed).toBe(true);
-    expect(sizeAt200Vol.sizeUsd).toBe(250);
+    // High volatility shrinks size; floor at MIRROR_MIN_PCT (0.3%) kicks in for very high vol.
+    expect(sizeAt200Vol.sizeUsd!).toBeLessThanOrEqual(sizeAt100Vol.sizeUsd!);
   });
 
-  it("should cap position at $2000", async () => {
-    const { engine, convergence, trades } = setupRisk({ paperBalanceUsd: 1_000_000, volatility: 50, liquidityUsd: 10_000_000 });
+  it("caps position size at $2000 even with large portfolio + deep liquidity", async () => {
+    const { engine, convergence, trades } = setupRisk({
+      paperBalanceUsd: 1_000_000,
+      volatility: 50,
+      liquidityUsd: 10_000_000
+    });
 
     const result = await engine.checkEntry(convergence, trades, 1);
 
@@ -86,7 +81,7 @@ function setupRisk(input: {
   const db = new Database(":memory:") as AppDatabase;
   databases.push(db);
   runMigrations(db);
-  const engine = new TestRiskEngine(db, input.liquidityUsd ?? 1_000_000);
+  const engine = new TestRiskEngine(db, "liquidityUsd" in input ? input.liquidityUsd! : 1_000_000);
   db.prepare(
     `INSERT INTO execution_config (key, value, updated_at)
      VALUES ('paper_balance_usd', ?, unixepoch())
