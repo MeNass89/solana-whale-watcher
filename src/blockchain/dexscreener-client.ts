@@ -17,6 +17,13 @@ export class DexScreenerServerError extends Error {
   }
 }
 
+export class DexScreenerTransientError extends Error {
+  constructor(public readonly cause: unknown) {
+    super(`dexscreener transient failure: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "DexScreenerTransientError";
+  }
+}
+
 export interface DexPair {
   pairAddress: string;
   dexId: string;
@@ -34,7 +41,7 @@ export class DexScreenerClient {
   //   - [] only when the API confirms zero pairs (200 + empty array, or 404).
   //   - throws DexScreenerRateLimitError on 429 so callers can back off.
   //   - throws DexScreenerServerError on 5xx so callers can retry transparently.
-  //   - returns [] (with warn log) on network/parse errors — same as before.
+  //   - throws DexScreenerTransientError on network/parse/unexpected status failures.
   async getTokenPairs(mint: string): Promise<DexPair[]> {
     let response: Response;
     try {
@@ -43,7 +50,7 @@ export class DexScreenerClient {
       });
     } catch (error) {
       logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "dexscreener: getTokenPairs network/timeout");
-      return [];
+      throw new DexScreenerTransientError(error);
     }
 
     if (response.status === 429) {
@@ -55,7 +62,7 @@ export class DexScreenerClient {
     if (response.status === 404) return [];
     if (!response.ok) {
       logger.warn({ mint, status: response.status }, "dexscreener: unexpected non-OK status");
-      return [];
+      throw new DexScreenerTransientError(new Error(`unexpected status ${response.status}`));
     }
 
     let data: unknown;
@@ -63,7 +70,7 @@ export class DexScreenerClient {
       data = await response.json();
     } catch (error) {
       logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "dexscreener: invalid JSON");
-      return [];
+      throw new DexScreenerTransientError(error);
     }
     if (!Array.isArray(data)) return [];
 

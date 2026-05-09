@@ -139,10 +139,9 @@ export class BirdEyeClient {
         totalBuy += item.totalBuyAmount ?? 0;
         totalSell += item.totalSellAmount ?? 0;
       }
-      const invested = totalBuy > 0 ? totalBuy : 1;
       return {
         totalPnl,
-        totalPnlPercent: (totalPnl / invested) * 100,
+        totalPnlPercent: totalBuy > 0 ? (totalPnl / totalBuy) * 100 : 0,
         totalBuyAmount: totalBuy,
         totalSellAmount: totalSell
       };

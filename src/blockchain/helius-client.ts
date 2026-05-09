@@ -106,8 +106,11 @@ export class HeliusClient implements IChainMonitor {
         if (response.status === 429 || response.status === 401 || response.status === 403 || response.status >= 500) {
           throw new HeliusRequestError(response.status, `Helius getWalletTransactions failed (${response.status})`);
         }
-        logger.warn({ address, status: response.status, beforeSignature }, "getWalletTransactions: non-OK 4xx, stopping pagination");
-        break;
+        if (response.status === 404) {
+          logger.warn({ address, status: response.status, beforeSignature }, "getWalletTransactions: wallet not found, stopping pagination");
+          break;
+        }
+        throw new HeliusRequestError(response.status, `Helius getWalletTransactions failed (${response.status})`);
       }
       const batch = (await response.json()) as HeliusTransaction[];
       if (batch.length === 0) break;

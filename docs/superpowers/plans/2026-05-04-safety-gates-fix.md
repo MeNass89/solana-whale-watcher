@@ -464,18 +464,19 @@ Tasks 1-4 can be done in parallel. Task 5 after Task 4. Task 6 last.
 ## Verification
 
 After all tasks:
+
 ```bash
-cd /Users/nassimlecornet/Projects/solana-whale-watcher
-npx vitest run
-npx tsc --noEmit
+# From repo root:
+npm run typecheck
+npm test
+npm run build
+
+# Restart the long-running service (replace <SERVICE_LABEL> with your local launchctl/systemd label):
+launchctl kickstart -k gui/$(id -u)/<SERVICE_LABEL>
 ```
 
-Then restart the service:
-```bash
-launchctl kickstart -k gui/$(id -u)/com.nassim.whale-watcher
-```
+Then check logs for startup audit output:
 
-Check logs for startup audit output:
 ```bash
 tail -50 data/launchd-stdout.log
 ```

@@ -79,8 +79,16 @@ export class TradeExecutor {
       }
     }
 
-    const entryPrice = (await this.swaps.getPriceUsd(convergence.token_mint)) ?? initialPrice;
-    const risk = await this.risk.checkEntry(convergence, trades, entryPrice);
+    let entryPrice: number;
+    let risk: Awaited<ReturnType<typeof this.risk.checkEntry>>;
+    try {
+      entryPrice = (await this.swaps.getPriceUsd(convergence.token_mint)) ?? initialPrice;
+      risk = await this.risk.checkEntry(convergence, trades, entryPrice);
+    } catch (error) {
+      logger.error({ err: error instanceof Error ? error : new Error(String(error)), convergenceId: convergence.id }, "execution skipped; risk pre-check failed");
+      await this.notify("ENTRY_FAILED", convergence, [{ name: "Error", value: `pre-check error: ${error instanceof Error ? error.message : String(error)}`, inline: false }]);
+      return;
+    }
     if (!risk.allowed || !risk.adjustedSizePct || !risk.sizeUsd) {
       logger.info({ convergenceId: convergence.id, reason: risk.reason }, "execution rejected by risk engine");
       await this.notify("ENTRY_REJECTED", convergence, [{ name: "Reason", value: risk.reason ?? "unknown", inline: false }]);

@@ -162,7 +162,7 @@ export class JupiterClient {
         `jupiter: quote.inAmount (${quote.inAmount}) does not match requested amountLamports (${params.amountLamports.toString()})`
       );
     }
-    const allowedImpactPct = params.slippageBps != null ? params.slippageBps / 100 : 3;
+    const allowedImpactPct = this.exitSlippageBps(params) / 100;
     if (quote.priceImpactPct && Number(quote.priceImpactPct) > allowedImpactPct) {
       throw new Error(`Price impact ${quote.priceImpactPct}% exceeds ${allowedImpactPct}% limit`);
     }
@@ -206,6 +206,12 @@ export class JupiterClient {
       throw new Error(
         `jupiter: quote.inAmount (${quote.inAmount}) does not match requested amountLamports (${params.amountLamports.toString()})`
       );
+    }
+    if (quote?.priceImpactPct) {
+      const allowedImpactPct = this.exitSlippageBps(params) / 100;
+      if (Number(quote.priceImpactPct) > allowedImpactPct) {
+        throw new Error(`Price impact ${quote.priceImpactPct}% exceeds ${allowedImpactPct}% limit`);
+      }
     }
     let outputAmount: number;
     if (quote) {
@@ -341,6 +347,12 @@ export class JupiterClient {
   }
 
   private async rawAmountToUi(mint: string, rawAmount: bigint, quoteDecimals?: number): Promise<number> {
+    if (rawAmount > BigInt(Number.MAX_SAFE_INTEGER)) {
+      // Number(bigint) silently truncates above 2^53-1; refuse rather than corrupt P&L.
+      throw new Error(
+        `rawAmountToUi: rawAmount ${rawAmount.toString()} exceeds Number.MAX_SAFE_INTEGER for mint ${mint}`
+      );
+    }
     const decimals = quoteDecimals ?? (await this.tokenDecimals(mint));
     return Number(rawAmount) / 10 ** decimals;
   }

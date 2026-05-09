@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DexScreenerClient, DexScreenerRateLimitError } from "../blockchain/dexscreener-client.js";
+import {
+  DexScreenerClient,
+  DexScreenerRateLimitError,
+  DexScreenerTransientError
+} from "../blockchain/dexscreener-client.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -16,10 +20,9 @@ describe("DexScreenerClient", () => {
     expect(result).toEqual([]);
   });
 
-  it("returns empty array on network failure", async () => {
+  it("throws DexScreenerTransientError on network failure", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
-    const result = await new DexScreenerClient().getTokenPairs("anymint");
-    expect(result).toEqual([]);
+    await expect(new DexScreenerClient().getTokenPairs("anymint")).rejects.toBeInstanceOf(DexScreenerTransientError);
   });
 
   it("throws DexScreenerRateLimitError on 429 so callers can back off", async () => {

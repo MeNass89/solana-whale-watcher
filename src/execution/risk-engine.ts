@@ -1,6 +1,11 @@
 import { config } from "../config/index.js";
-import { birdEyeClient } from "../blockchain/birdeye-client.js";
-import { dexScreenerClient } from "../blockchain/dexscreener-client.js";
+import { BirdEyeRateLimitError, birdEyeClient } from "../blockchain/birdeye-client.js";
+import {
+  DexScreenerRateLimitError,
+  DexScreenerServerError,
+  DexScreenerTransientError,
+  dexScreenerClient
+} from "../blockchain/dexscreener-client.js";
 import { jupiterClient } from "./jupiter-client.js";
 import type { AppDatabase } from "../storage/database.js";
 import type { ConvergenceRow } from "../storage/models/convergences.js";
@@ -53,6 +58,15 @@ const MIRROR_MIN_PCT = 0.3;
 const MIRROR_MAX_PCT = 5.0;
 const MIRROR_FALLBACK_PCT = 1.0;
 const MAX_REASONABLE_VOL_PCT = 300;
+
+function isTransientProviderError(error: unknown): boolean {
+  return (
+    error instanceof BirdEyeRateLimitError ||
+    error instanceof DexScreenerRateLimitError ||
+    error instanceof DexScreenerServerError ||
+    error instanceof DexScreenerTransientError
+  );
+}
 
 export class RiskEngine {
   constructor(private db: AppDatabase | null = null) {}
@@ -279,14 +293,16 @@ export class RiskEngine {
   }
 
   async tokenLiquidityLive(mint: string): Promise<number | null> {
-    // Both BirdEye and DexScreener now throw on 429/5xx; either failure must
-    // not skip the next fallback. Final fallback is the cached DB value.
+    // Provider rate-limit/transient failures fail closed; only benign nulls
+    // continue to the next source or cached DB value.
     const overview = await birdEyeClient.getTokenOverview(mint).catch((error) => {
+      if (isTransientProviderError(error)) throw error;
       logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: birdeye unavailable, falling through to dexscreener");
       return null;
     });
     if (overview?.liquidityUsd != null) return overview.liquidityUsd;
     const pair = await dexScreenerClient.getBestPair(mint).catch((error) => {
+      if (isTransientProviderError(error)) throw error;
       logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: dexscreener unavailable, falling back to cached liquidity");
       return null;
     });
@@ -296,6 +312,7 @@ export class RiskEngine {
 
   async tokenAgeLive(mint: string): Promise<number | null> {
     const overview = await birdEyeClient.getTokenOverview(mint).catch((error) => {
+      if (isTransientProviderError(error)) throw error;
       logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: birdeye unavailable for token age, trying dexscreener");
       return null;
     });
@@ -303,6 +320,7 @@ export class RiskEngine {
       return (Date.now() / 1000 - overview.createdAt) / 3600;
     }
     const pair = await dexScreenerClient.getBestPair(mint).catch((error) => {
+      if (isTransientProviderError(error)) throw error;
       logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: dexscreener unavailable, no token-age estimate");
       return null;
     });
