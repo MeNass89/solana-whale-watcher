@@ -37,7 +37,7 @@ export async function registerWebhookRoutes(
         continue;
       }
       const preSellBalance = trade.tradeType === "SELL"
-        ? computePreSellBalance(deps.db, trade.walletAddress, trade.tokenMint, trade.blockTime)
+        ? computePreSellBalance(deps.db, trade.walletAddress, trade.tokenMint, trade.blockTime, trade.txSignature)
         : 0;
       const inserted = deps.trades.insert(trade);
       if (!inserted) continue;
@@ -65,15 +65,23 @@ export async function registerWebhookRoutes(
   });
 }
 
-function computePreSellBalance(db: AppDatabase, walletAddress: string, tokenMint: string, beforeBlockTime: number): number {
+function computePreSellBalance(
+  db: AppDatabase,
+  walletAddress: string,
+  tokenMint: string,
+  beforeBlockTime: number,
+  excludeTxSignature: string
+): number {
   const row = db
     .prepare(
       `SELECT
         COALESCE(SUM(CASE WHEN trade_type = 'BUY' THEN amount_token ELSE 0 END), 0) AS bought,
         COALESCE(SUM(CASE WHEN trade_type = 'SELL' THEN amount_token ELSE 0 END), 0) AS sold
        FROM trades
-       WHERE wallet_address = ? AND token_mint = ? AND block_time < ?`
+       WHERE wallet_address = ?
+         AND token_mint = ?
+         AND (block_time < ? OR (block_time = ? AND tx_signature != ?))`
     )
-    .get(walletAddress, tokenMint, beforeBlockTime) as { bought: number; sold: number };
+    .get(walletAddress, tokenMint, beforeBlockTime, beforeBlockTime, excludeTxSignature) as { bought: number; sold: number };
   return Math.max(0, row.bought - row.sold);
 }

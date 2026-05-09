@@ -32,7 +32,8 @@ export class ConvergenceEngine {
     if (newTrade.tradeType !== "BUY") return null;
 
     const windowSeconds = config.convergence.windowMinutes * 60;
-    const since = Math.floor(Date.now() / 1000) - windowSeconds;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const since = nowSeconds - windowSeconds;
     const recentBuys = this.trades.findByTokenInWindow(newTrade.tokenMint, since, "BUY");
     const uniqueWallets = new Set(recentBuys.map((trade) => trade.wallet_address));
     const totalActive = this.wallets.countActive();
@@ -53,7 +54,7 @@ export class ConvergenceEngine {
     score = applyManipulationPenalty(score, signals);
 
     let tier = pickTier(score, uniqueWallets.size);
-    tier = validateTierWindow(tier, score, recentBuys, windowSeconds, threshold);
+    tier = validateTierWindow(tier, score, recentBuys, windowSeconds, threshold, nowSeconds);
 
     const quality = this.wallets.qualityFor([...uniqueWallets]);
     const resolvedQuality = [...uniqueWallets].map((addr) => quality.get(addr));
@@ -85,7 +86,7 @@ export class ConvergenceEngine {
       const boosted = tier === "WATCH" ? "NOTABLE" : tier === "NOTABLE" ? "CRITICAL" : tier;
       // Boost is intentionally not gated on the penalized score; alpha presence
       // is the trust signal. Revalidate the boosted tier's narrow-window floor.
-      tier = validateTierWindow(boosted, scoreForTier(boosted), recentBuys, windowSeconds, threshold);
+      tier = validateTierWindow(boosted, scoreForTier(boosted), recentBuys, windowSeconds, threshold, nowSeconds);
       logger.info({ token: newTrade.tokenMint, avgPnl, hasTopAlpha: true, tier }, "tier boosted by alpha trigger (re-validated against narrow-window floor)");
     }
 
@@ -157,7 +158,8 @@ function validateTierWindow(
   score: number,
   recentBuys: TradeRow[],
   windowSeconds: number,
-  threshold: number
+  threshold: number,
+  nowSeconds: number
 ): ConvergenceTier {
   let tier = candidate;
   while (true) {
@@ -170,7 +172,7 @@ function validateTierWindow(
     const tierWindowSeconds = tier === "CRITICAL" ? 30 * 60 : tier === "NOTABLE" ? 60 * 60 : windowSeconds;
     if (tierWindowSeconds >= windowSeconds) return tier;
 
-    const tierSince = Math.floor(Date.now() / 1000) - tierWindowSeconds;
+    const tierSince = nowSeconds - tierWindowSeconds;
     const tierWallets = new Set(recentBuys.filter((t) => t.block_time >= tierSince).map((t) => t.wallet_address));
     if (tierWallets.size >= Math.max(threshold, getMinWalletsForTier(tier))) return tier;
 

@@ -23,7 +23,7 @@
 
 **Problem:** `getWalletTransactions` lines 96-97 break on `!response.ok`, masking 429/5xx. Other methods (`getWebhook`) correctly throw `HeliusRequestError` on transient failures.
 
-**Fix:** Throw `HeliusRequestError` on 429 or 5xx; break only for other 4xx (malformed request — pagination should stop, not retry).
+**Fix:** Throw `HeliusRequestError` on 401/403/429/5xx and on any unexpected 4xx. Only `404` is treated as the no-more-data terminal response.
 
 ```ts
 const response = await fetch(url);

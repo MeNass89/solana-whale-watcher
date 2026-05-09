@@ -23,6 +23,11 @@ else
     log "ERROR: failed to start funnel"
     exit 1
   fi
+  if ! "$TS_BIN" funnel status 2>/dev/null | grep -q "127.0.0.1:3000"; then
+    : > "$URL_FILE"
+    log "ERROR: funnel start returned success but bind check failed"
+    exit 1
+  fi
   printf "%s\n" "$URL" > "$URL_FILE"
 fi
 

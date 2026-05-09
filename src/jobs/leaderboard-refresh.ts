@@ -25,12 +25,14 @@ export function runLeaderboardRefresh(): Promise<void> {
 
     // A wedged leaderboard run would otherwise hold the scheduler slot
     // forever; SIGTERM first, then SIGKILL after a short grace period.
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
     const timeout = setTimeout(() => {
       if (settled) return;
-      settled = true;
+      timedOut = true;
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
-      reject(new Error(`leaderboard-refresh timed out after ${LEADERBOARD_TIMEOUT_MS}ms`));
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      killTimer.unref();
     }, LEADERBOARD_TIMEOUT_MS);
     timeout.unref();
 
@@ -38,12 +40,18 @@ export function runLeaderboardRefresh(): Promise<void> {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
       reject(error);
     });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      if (timedOut) {
+        reject(new Error(`leaderboard-refresh timed out after ${LEADERBOARD_TIMEOUT_MS}ms`));
+        return;
+      }
       if (code === 0) {
         logger.info({ output: stdout.trim() }, "leaderboard-refresh: job completed");
         resolve();
