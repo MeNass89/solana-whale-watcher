@@ -113,6 +113,8 @@ function setupRisk(input: {
       outcome: null,
       created_at: 2
     },
-    trades: [{ amount_usd: 30_000 } as TradeRow]
+    // amount_sol > 0 forces computeMirrorSizePct down the real sizing path
+    // instead of the MIRROR_FALLBACK_PCT short-circuit.
+    trades: [{ amount_usd: 30_000, amount_sol: 150 } as TradeRow]
   };
 }

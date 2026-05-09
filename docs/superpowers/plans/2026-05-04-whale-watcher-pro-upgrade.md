@@ -1,5 +1,11 @@
 # Whale Watcher Pro Upgrade — Implementation Plan
 
+> **⚠️ HISTORICAL PLANNING DOCUMENT.** Captured 2026-05-04, executed and superseded
+> by code through 2026-05-09. Specific implementation snippets in this plan
+> (notably the rapid-reversal placement, the MEME tier slippage gating, and the
+> getWebhook 404-only swallow) reflect the *initial* design; refer to live source
+> for the current implementation. Kept for historical context, not for re-execution.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Upgrade the Solana whale watcher to match or exceed the top 10 crypto trading bot YouTube videos — closing all 10 gaps from the architecture audit.

@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import DatabaseConstructor from "better-sqlite3";
 import { config } from "../src/config/index.js";
+import { matchFifo, type RawTrade } from "../src/engine/fifo-matcher.js";
 
 const DB_PATH = path.resolve(process.cwd(), config.databasePath);
 const OUTPUT_PATH = path.resolve(process.cwd(), "data/leaderboard.json");
@@ -12,22 +14,7 @@ const CONFIRMED_LOSER_ADDRESSES = new Set([
   "9jyqFiLnruggwNn4EQwBNFXwpbLM9hrA4hV59ytyAVVz"
 ]);
 
-interface CycleRow {
-  wallet: string;
-  token_mint: string;
-  n_buys: number;
-  n_sells: number;
-  buy_sol: number;
-  sell_sol: number;
-  buy_tok: number;
-  sell_tok: number;
-  buy_usd: number;
-  sell_usd: number;
-  first_buy_time: number | null;
-  last_sell_time: number | null;
-}
-
-interface WalletMetrics {
+export interface WalletMetrics {
   wallet: string;
   class: "alpha" | "loser" | "accumulation_bot" | "incomplete";
   realized_usd: number;
@@ -42,6 +29,11 @@ interface WalletMetrics {
   n_closed: number;
   n_open: number;
   n_partial: number;
+}
+
+export interface WalletMetricsResult {
+  metrics: WalletMetrics[];
+  unmatched_sells: number;
 }
 
 function truncWallet(wallet: string): string {
@@ -88,18 +80,9 @@ function printBots(rows: WalletMetrics[]): void {
   }
 }
 
-function main(): void {
-  const applyPrune = process.argv.includes("--apply-prune");
-  const generatedAt = Math.floor(Date.now() / 1000);
-  const cutoff = generatedAt - WINDOW_SEC;
-
-  const db = new DatabaseConstructor(DB_PATH);
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
-
-  const activeWallets = db.prepare("SELECT address FROM wallets WHERE active = 1 ORDER BY address").all() as Array<{ address: string }>;
+export function buildWalletMetrics(activeWallets: string[], trades: RawTrade[]): WalletMetricsResult {
   const metrics = new Map<string, WalletMetrics>();
-  for (const { address } of activeWallets) {
+  for (const address of activeWallets) {
     metrics.set(address, {
       wallet: address,
       class: "incomplete",
@@ -118,53 +101,35 @@ function main(): void {
     });
   }
 
-  const cycles = db
-    .prepare(
-      `SELECT wallet_address AS wallet,
-              token_mint,
-              SUM(CASE WHEN trade_type = 'BUY' THEN 1 ELSE 0 END) AS n_buys,
-              SUM(CASE WHEN trade_type = 'SELL' THEN 1 ELSE 0 END) AS n_sells,
-              SUM(CASE WHEN trade_type = 'BUY' THEN COALESCE(amount_sol, 0) ELSE 0 END) AS buy_sol,
-              SUM(CASE WHEN trade_type = 'SELL' THEN COALESCE(amount_sol, 0) ELSE 0 END) AS sell_sol,
-              SUM(CASE WHEN trade_type = 'BUY' THEN COALESCE(amount_token, 0) ELSE 0 END) AS buy_tok,
-              SUM(CASE WHEN trade_type = 'SELL' THEN COALESCE(amount_token, 0) ELSE 0 END) AS sell_tok,
-              SUM(CASE WHEN trade_type = 'BUY' THEN COALESCE(amount_usd, 0) ELSE 0 END) AS buy_usd,
-              SUM(CASE WHEN trade_type = 'SELL' THEN COALESCE(amount_usd, 0) ELSE 0 END) AS sell_usd,
-              MIN(CASE WHEN trade_type = 'BUY' THEN block_time END) AS first_buy_time,
-              MAX(CASE WHEN trade_type = 'SELL' THEN block_time END) AS last_sell_time
-       FROM trades
-       WHERE block_time > ?
-         AND wallet_address IN (SELECT address FROM wallets WHERE active = 1)
-       GROUP BY wallet_address, token_mint`
-    )
-    .all(cutoff) as CycleRow[];
+  for (const trade of trades) {
+    const wallet = metrics.get(trade.wallet);
+    if (!wallet) continue;
+    wallet.n_trades += 1;
+    if (trade.type === "BUY") wallet.n_buys += 1;
+    else wallet.n_sells += 1;
+  }
 
+  const matched = matchFifo(trades);
   const holdTimesByWallet = new Map<string, number[]>();
-  for (const cycle of cycles) {
+  for (const cycle of matched.cycles) {
     const wallet = metrics.get(cycle.wallet);
     if (!wallet) continue;
 
-    wallet.n_buys += cycle.n_buys;
-    wallet.n_sells += cycle.n_sells;
-    wallet.n_trades += cycle.n_buys + cycle.n_sells;
+    wallet.n_closed += 1;
+    wallet.realized_sol += cycle.pnl_sol;
+    wallet.realized_usd += cycle.pnl_usd;
+    if (cycle.pnl_sol > 0) wallet.wins += 1;
 
-    if (cycle.sell_tok >= cycle.buy_tok * 0.95) {
-      wallet.n_closed += 1;
-      wallet.realized_sol += cycle.sell_sol - cycle.buy_sol;
-      wallet.realized_usd += cycle.sell_usd - cycle.buy_usd;
-      if (cycle.sell_sol > cycle.buy_sol) wallet.wins += 1;
-      if (cycle.first_buy_time != null && cycle.last_sell_time != null) {
-        const holdTime = Math.max(0, cycle.last_sell_time - cycle.first_buy_time);
-        const holdTimes = holdTimesByWallet.get(cycle.wallet) ?? [];
-        holdTimes.push(holdTime);
-        holdTimesByWallet.set(cycle.wallet, holdTimes);
-      }
-    } else if (cycle.sell_tok === 0) {
-      wallet.n_open += 1;
-      wallet.locked_sol += cycle.buy_sol;
-    } else {
-      wallet.n_partial += 1;
-    }
+    const holdTimes = holdTimesByWallet.get(cycle.wallet) ?? [];
+    holdTimes.push(cycle.hold_time_s);
+    holdTimesByWallet.set(cycle.wallet, holdTimes);
+  }
+
+  for (const position of matched.open) {
+    const wallet = metrics.get(position.wallet);
+    if (!wallet) continue;
+    wallet.n_open += 1;
+    wallet.locked_sol += position.locked_sol;
   }
 
   for (const wallet of metrics.values()) {
@@ -185,7 +150,42 @@ function main(): void {
     }
   }
 
-  const all = [...metrics.values()];
+  return { metrics: [...metrics.values()], unmatched_sells: matched.unmatched_sells };
+}
+
+function main(): void {
+  const applyPrune = process.argv.includes("--apply-prune");
+  const generatedAt = Math.floor(Date.now() / 1000);
+  const cutoff = generatedAt - WINDOW_SEC;
+
+  const db = new DatabaseConstructor(DB_PATH);
+  db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
+
+  const activeWallets = db.prepare("SELECT address FROM wallets WHERE active = 1 ORDER BY address").all() as Array<{ address: string }>;
+  const trades = db
+    .prepare(
+      `SELECT wallet_address AS wallet,
+              token_mint AS mint,
+              trade_type AS type,
+              block_time,
+              COALESCE(amount_token, 0) AS amount_token,
+              COALESCE(amount_sol, 0) AS amount_sol,
+              COALESCE(amount_usd, 0) AS amount_usd
+       FROM trades
+       WHERE block_time > ?
+         AND wallet_address IN (SELECT address FROM wallets WHERE active = 1)
+       ORDER BY wallet_address, token_mint, block_time, id`
+    )
+    .all(cutoff) as RawTrade[];
+
+  const { metrics, unmatched_sells } = buildWalletMetrics(
+    activeWallets.map((row) => row.address),
+    trades
+  );
+  console.log(`FIFO unmatched sells skipped: ${unmatched_sells}`);
+
+  const all = metrics;
   const alpha = all.filter((row) => row.class === "alpha").sort((a, b) => b.realized_sol - a.realized_sol);
   const losers = all.filter((row) => row.class === "loser").sort((a, b) => a.realized_sol - b.realized_sol);
   const accumulationBots = all
@@ -274,4 +274,6 @@ function main(): void {
   db.close();
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

@@ -1,5 +1,11 @@
 # Solana Whale Watcher — Architecture Audit Report
 
+> **⚠️ HISTORICAL SNAPSHOT — pre-remediation.** This report was taken 2026-05-04 to plan the
+> remediation work that ran 2026-05-09. Several gaps below (notably GAP 6 — co-buyer scanner,
+> GAP 7 — webhook health) have since been implemented. See `src/jobs/co-buyer-scanner.ts`,
+> `src/jobs/webhook-health.ts`, and the post-convergence hook in `src/services/alert-manager.ts`
+> for the current state. Use this document for historical context only.
+
 **Date:** 2026-05-04  
 **Auditor:** Claude Sonnet 4.6 (via expert consensus from 41 YouTube videos + full codebase read)  
 **Scope:** Full comparison of current TypeScript/Node.js implementation against pro consensus findings.

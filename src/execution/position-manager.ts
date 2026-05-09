@@ -148,12 +148,19 @@ export class PositionManager {
           }
           continue;
         }
-        if (!isSanePrice(price)) {
-          logger.warn({ mint: position.token_mint, currentPrice: price }, "price update rejected: outside sane bounds");
-          continue;
-        }
-        if (position.current_price_usd && !isSanePriceChange(position.current_price_usd, price)) {
-          logger.warn({ mint: position.token_mint, old: position.current_price_usd, new: price }, "price update rejected: change exceeds 100x in single tick");
+        // Insane prices and >100x ticks count toward the dead-feed counter
+        // for the same reason nulls do: a feed stuck producing garbage leaves
+        // the position unmanaged forever otherwise.
+        if (!isSanePrice(price) || (position.current_price_usd && !isSanePriceChange(position.current_price_usd, price))) {
+          const count = (this.nullPriceCounts.get(position.id) ?? 0) + 1;
+          this.nullPriceCounts.set(position.id, count);
+          logger.warn({ mint: position.token_mint, currentPrice: price, old: position.current_price_usd, badTickCount: count }, "price update rejected: insane value or >100x change");
+          if (count >= MAX_CONSECUTIVE_NULL_PRICES) {
+            logger.error({ positionId: position.id, token: position.token_symbol, badTickCount: count },
+              "price feed dead (consecutive bad ticks) — forced emergency exit");
+            await this.exit(position, "PRICE_FEED_DEAD", 100, true);
+            this.nullPriceCounts.delete(position.id);
+          }
           continue;
         }
         this.nullPriceCounts.delete(position.id);
