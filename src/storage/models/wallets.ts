@@ -113,6 +113,13 @@ export class WalletModel {
     return (this.db.prepare("SELECT * FROM wallets WHERE address = ?").get(address) as WalletRow | undefined) ?? null;
   }
 
+  countTradesAsOf(address: string, asOfTime: number): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS c FROM trades WHERE wallet_address = ? AND block_time <= ?")
+      .get(address, asOfTime) as { c: number };
+    return row.c;
+  }
+
   scoresFor(addresses: string[]): Map<string, number> {
     if (addresses.length === 0) return new Map();
     const rows = this.db

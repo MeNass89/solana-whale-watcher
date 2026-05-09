@@ -90,6 +90,13 @@ function insertWallet(
     `INSERT INTO wallets (address, score, state, active, realized_sol_30d, n_closed_30d, wallet_class, added_at, total_trades)
      VALUES (?, 0, 'ACTIVE', 1, ?, ?, ?, ?, 50)`
   ).run(address, input.realizedSol, input.nClosed, input.walletClass, matureAddedAt);
+  const insertHistoricalTrade = db.prepare(
+    `INSERT INTO trades (wallet_address, token_mint, tx_signature, amount_token, amount_sol, amount_usd, trade_type, block_time)
+     VALUES (?, ?, ?, 1, 1, 1, 'BUY', ?)`
+  );
+  for (let i = 0; i < 15; i++) {
+    insertHistoricalTrade.run(address, `history-${i}`, `${address}-history-${i}`, matureAddedAt + i);
+  }
 }
 
 // Anchor every trade inside the CRITICAL 30-min narrow window without making

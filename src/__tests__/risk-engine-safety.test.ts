@@ -37,6 +37,14 @@ describe("risk-engine safety parameters", () => {
     expect(result.reason).toBe("pool TVL $1000 below $5k floor");
   });
 
+  it("allows entries at exactly the $5k TVL hard floor", async () => {
+    const { engine, convergence, trades } = setupRisk({ volatility: 50, liquidityUsd: 5_000, paperBalanceUsd: 10_000 });
+
+    const result = await engine.checkEntry(convergence, trades, 1);
+
+    expect(result.allowed).toBe(true);
+  });
+
   it("blocks entries when pool TVL is unavailable", async () => {
     const { engine, convergence, trades } = setupRisk({ volatility: 50, liquidityUsd: null });
 

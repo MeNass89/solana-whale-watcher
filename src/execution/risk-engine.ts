@@ -184,7 +184,13 @@ export class RiskEngine {
       );
       throw error;
     }
-    if (!solPriceUsd || solPriceUsd <= 0) return MIRROR_FALLBACK_PCT;
+    if (!solPriceUsd || solPriceUsd <= 0) {
+      logger.warn(
+        { trades: trades.length, portfolioValueUsd, solPriceUsd },
+        "risk-engine: SOL/USD price unavailable; using fallback mirror size"
+      );
+      return MIRROR_FALLBACK_PCT;
+    }
     const targetUsd = median * solPriceUsd;
     const targetPct = (targetUsd / portfolioValueUsd) * 100;
     return Math.max(MIRROR_MIN_PCT, Math.min(MIRROR_MAX_PCT, targetPct));

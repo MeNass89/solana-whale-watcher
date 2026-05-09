@@ -84,7 +84,11 @@ function printBots(rows: WalletMetrics[]): void {
   }
 }
 
-export function buildWalletMetrics(activeWallets: string[], trades: RawTrade[]): WalletMetricsResult {
+export function buildWalletMetrics(
+  activeWallets: string[],
+  trades: RawTrade[],
+  windowStart?: number
+): WalletMetricsResult {
   const metrics = new Map<string, WalletMetrics>();
   for (const address of activeWallets) {
     metrics.set(address, {
@@ -108,6 +112,7 @@ export function buildWalletMetrics(activeWallets: string[], trades: RawTrade[]):
   for (const trade of trades) {
     const wallet = metrics.get(trade.wallet);
     if (!wallet) continue;
+    if (windowStart !== undefined && trade.block_time < windowStart) continue;
     wallet.n_trades += 1;
     if (trade.type === "BUY") wallet.n_buys += 1;
     else wallet.n_sells += 1;
@@ -168,119 +173,122 @@ export function refreshLeaderboard(options: RefreshLeaderboardOptions = {}): voi
   const cutoff = generatedAt - WINDOW_SEC;
 
   const db = new DatabaseConstructor(DB_PATH);
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("busy_timeout = 5000");
 
-  const activeWallets = db.prepare("SELECT address FROM wallets WHERE active = 1 ORDER BY address").all() as Array<{ address: string }>;
-  const trades = db
-    .prepare(
-      `SELECT wallet_address AS wallet,
-              token_mint AS mint,
-              trade_type AS type,
-              block_time,
-              COALESCE(amount_token, 0) AS amount_token,
-              COALESCE(amount_sol, 0) AS amount_sol,
-              COALESCE(amount_usd, 0) AS amount_usd
-       FROM trades
-       WHERE (block_time > ? OR (block_time <= ? AND trade_type = 'BUY'))
-         AND wallet_address IN (SELECT address FROM wallets WHERE active = 1)
-       ORDER BY wallet_address, token_mint, block_time, id`
-    )
-    .all(cutoff, cutoff) as RawTrade[];
+    const activeWallets = db.prepare("SELECT address FROM wallets WHERE active = 1 ORDER BY address").all() as Array<{ address: string }>;
+    const trades = db
+      .prepare(
+        `SELECT wallet_address AS wallet,
+                token_mint AS mint,
+                trade_type AS type,
+                block_time,
+                COALESCE(amount_token, 0) AS amount_token,
+                COALESCE(amount_sol, 0) AS amount_sol,
+                COALESCE(amount_usd, 0) AS amount_usd
+         FROM trades
+         WHERE (block_time > ? OR (block_time <= ? AND trade_type = 'BUY'))
+           AND wallet_address IN (SELECT address FROM wallets WHERE active = 1)
+         ORDER BY wallet_address, token_mint, block_time, id`
+      )
+      .all(cutoff, cutoff) as RawTrade[];
 
-  const { metrics, unmatched_sells } = buildWalletMetrics(
-    activeWallets.map((row) => row.address),
-    trades
-  );
-  console.log(`FIFO unmatched sells skipped: ${unmatched_sells}`);
+    const { metrics, unmatched_sells } = buildWalletMetrics(
+      activeWallets.map((row) => row.address),
+      trades,
+      cutoff
+    );
+    console.log(`FIFO unmatched sells skipped: ${unmatched_sells}`);
 
-  const all = metrics;
-  const alpha = all.filter((row) => row.class === "alpha").sort((a, b) => b.realized_sol - a.realized_sol);
-  const losers = all.filter((row) => row.class === "loser").sort((a, b) => a.realized_sol - b.realized_sol);
-  const accumulationBots = all
-    .filter((row) => row.class === "accumulation_bot")
-    .sort((a, b) => b.locked_sol - a.locked_sol || b.n_trades - a.n_trades);
-  const incomplete = all
-    .filter((row) => row.class === "incomplete")
-    .sort((a, b) => b.locked_sol - a.locked_sol || b.n_trades - a.n_trades);
+    const all = metrics;
+    const alpha = all.filter((row) => row.class === "alpha").sort((a, b) => b.realized_sol - a.realized_sol);
+    const losers = all.filter((row) => row.class === "loser").sort((a, b) => a.realized_sol - b.realized_sol);
+    const accumulationBots = all
+      .filter((row) => row.class === "accumulation_bot")
+      .sort((a, b) => b.locked_sol - a.locked_sol || b.n_trades - a.n_trades);
+    const incomplete = all
+      .filter((row) => row.class === "incomplete")
+      .sort((a, b) => b.locked_sol - a.locked_sol || b.n_trades - a.n_trades);
 
-  printRanked("ALPHA WALLETS (ranked by realized_sol desc)", alpha);
-  printRanked("LOSERS (realized_sol < 0)", losers);
-  printBots(accumulationBots);
+    printRanked("ALPHA WALLETS (ranked by realized_sol desc)", alpha);
+    printRanked("LOSERS (realized_sol < 0)", losers);
+    printBots(accumulationBots);
 
-  const output = {
-    generated_at: generatedAt,
-    window_days: WINDOW_DAYS,
-    alpha,
-    losers,
-    accumulation_bots: accumulationBots.map((row) => ({
-      wallet: row.wallet,
-      n_trades: row.n_trades,
-      n_buys: row.n_buys,
-      n_sells: row.n_sells,
-      locked_sol: row.locked_sol,
-      realized_usd: row.realized_usd,
-      realized_sol: row.realized_sol,
-      class: row.class
-    })),
-    incomplete: incomplete.map((row) => ({
-      wallet: row.wallet,
-      n_open: row.n_open,
-      n_partial: row.n_partial,
-      locked_sol: row.locked_sol,
-      n_trades: row.n_trades,
-      class: row.class
-    }))
-  };
-  fs.writeFileSync(OUTPUT_PATH, `${JSON.stringify(output, null, 2)}\n`);
-  console.log(`\nJSON written to ${path.relative(process.cwd(), OUTPUT_PATH)}`);
+    const output = {
+      generated_at: generatedAt,
+      window_days: WINDOW_DAYS,
+      alpha,
+      losers,
+      accumulation_bots: accumulationBots.map((row) => ({
+        wallet: row.wallet,
+        n_trades: row.n_trades,
+        n_buys: row.n_buys,
+        n_sells: row.n_sells,
+        locked_sol: row.locked_sol,
+        realized_usd: row.realized_usd,
+        realized_sol: row.realized_sol,
+        class: row.class
+      })),
+      incomplete: incomplete.map((row) => ({
+        wallet: row.wallet,
+        n_open: row.n_open,
+        n_partial: row.n_partial,
+        locked_sol: row.locked_sol,
+        n_trades: row.n_trades,
+        class: row.class
+      }))
+    };
+    fs.writeFileSync(OUTPUT_PATH, `${JSON.stringify(output, null, 2)}\n`);
+    console.log(`\nJSON written to ${path.relative(process.cwd(), OUTPUT_PATH)}`);
 
-  const updateMetrics = db.prepare(
-    `UPDATE wallets
-     SET realized_sol_30d = ?, n_closed_30d = ?, wallet_class = ?
-     WHERE address = ?`
-  );
-  const writeBack = db.transaction((rows: WalletMetrics[]) => {
-    for (const row of rows) {
-      updateMetrics.run(row.realized_sol, row.n_closed, row.class, row.wallet);
-    }
-  });
-  writeBack(all);
-  console.log(`wallets metrics updated: ${all.length}`);
-
-  const pruneCandidates = losers.filter(
-    (row) => row.realized_sol < 0 && row.n_closed >= 3 && CONFIRMED_LOSER_ADDRESSES.has(row.wallet)
-  );
-  if (applyPrune) {
-    const updateWallet = db.prepare("UPDATE wallets SET active = 0 WHERE address = ? AND active = 1");
-    const disabled: WalletMetrics[] = [];
-    const tx = db.transaction((rows: WalletMetrics[]) => {
+    const updateMetrics = db.prepare(
+      `UPDATE wallets
+       SET realized_sol_30d = ?, n_closed_30d = ?, wallet_class = ?
+       WHERE address = ?`
+    );
+    const writeBack = db.transaction((rows: WalletMetrics[]) => {
       for (const row of rows) {
-        if (updateWallet.run(row.wallet).changes > 0) disabled.push(row);
+        updateMetrics.run(row.realized_sol, row.n_closed, row.class, row.wallet);
       }
     });
-    tx(pruneCandidates);
+    writeBack(all);
+    console.log(`wallets metrics updated: ${all.length}`);
 
-    console.log("\nDisabled wallets:");
-    if (disabled.length === 0) {
-      console.log("(none)");
+    const pruneCandidates = losers.filter(
+      (row) => row.realized_sol < 0 && row.n_closed >= 3 && CONFIRMED_LOSER_ADDRESSES.has(row.wallet)
+    );
+    if (applyPrune) {
+      const updateWallet = db.prepare("UPDATE wallets SET active = 0 WHERE address = ? AND active = 1");
+      const disabled: WalletMetrics[] = [];
+      const tx = db.transaction((rows: WalletMetrics[]) => {
+        for (const row of rows) {
+          if (updateWallet.run(row.wallet).changes > 0) disabled.push(row);
+        }
+      });
+      tx(pruneCandidates);
+
+      console.log("\nDisabled wallets:");
+      if (disabled.length === 0) {
+        console.log("(none)");
+      } else {
+        for (const row of disabled) {
+          console.log(`${row.wallet} | realized_sol=${fmtSol(row.realized_sol)} | n_closed=${row.n_closed}`);
+        }
+      }
     } else {
-      for (const row of disabled) {
-        console.log(`${row.wallet} | realized_sol=${fmtSol(row.realized_sol)} | n_closed=${row.n_closed}`);
+      console.log("\nPrune candidates (run with --apply-prune to disable):");
+      if (pruneCandidates.length === 0) {
+        console.log("(none)");
+      } else {
+        for (const row of pruneCandidates) {
+          console.log(`${row.wallet} | realized_sol=${fmtSol(row.realized_sol)} | n_closed=${row.n_closed}`);
+        }
       }
     }
-  } else {
-    console.log("\nPrune candidates (run with --apply-prune to disable):");
-    if (pruneCandidates.length === 0) {
-      console.log("(none)");
-    } else {
-      for (const row of pruneCandidates) {
-        console.log(`${row.wallet} | realized_sol=${fmtSol(row.realized_sol)} | n_closed=${row.n_closed}`);
-      }
-    }
+  } finally {
+    db.close();
   }
-
-  db.close();
 }
 
 function main(): void {

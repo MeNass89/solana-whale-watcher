@@ -41,6 +41,33 @@ describe("trade-executor mint dedup", () => {
     expect(getPriceUsd).not.toHaveBeenCalled();
     expect(db.prepare("SELECT COUNT(*) AS count FROM executions").get()).toEqual({ count: 0 });
   });
+
+  it("skips execution when a partial position already exists for the token mint", async () => {
+    executionEnabled = config.execution.enabled;
+    (config.execution as { enabled: boolean }).enabled = true;
+    const db = new Database(":memory:") as AppDatabase;
+    databases.push(db);
+    runMigrations(db);
+    db.prepare(
+      `INSERT INTO positions
+        (token_mint, token_symbol, amount_token, entry_price_usd, tier, status)
+       VALUES ('mint-a', 'MINTA', 10, 1, 'NOTABLE', 'PARTIAL')`
+    ).run();
+    const getPriceUsd = vi.fn();
+    const executor = new TradeExecutor();
+    executor.configure({
+      db,
+      swaps: { getPriceUsd } as any,
+      risk: { checkEntry: vi.fn() } as any,
+      positions: { openPosition: vi.fn() } as any,
+      discord: { send: vi.fn() } as any
+    });
+
+    await executor.onConvergence(convergence(), []);
+
+    expect(getPriceUsd).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT COUNT(*) AS count FROM executions").get()).toEqual({ count: 0 });
+  });
 });
 
 function convergence(): ConvergenceRow {

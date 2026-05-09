@@ -177,6 +177,29 @@ export class TradeExecutor {
     // entirely"; widen the fallback to 20% when liquidity is unknown.
     const fallbackBps = panicExit ? 2000 : 500;
     const slippageBps = this.swaps.slippageBpsForLiquidity(exitLiquidityUsd) ?? fallbackBps;
+
+    const decimals = Math.max(0, Math.trunc(this.tokenDecimals(current.token_mint)));
+    const scale = 10n ** BigInt(decimals);
+    let total: bigint;
+    if (!Number.isFinite(sellAmountToken) || sellAmountToken <= 0) {
+      total = 1n;
+    } else {
+      const flooredTokenAmount = Math.floor(sellAmountToken);
+      const intPart = BigInt(flooredTokenAmount);
+      const fracPart = sellAmountToken - flooredTokenAmount;
+      const fracBaseUnits = BigInt(Math.floor(fracPart * Number(scale)));
+      total = intPart * scale + fracBaseUnits;
+    }
+    if (total < 1n) {
+      logger.info(
+        { positionId: current.id, sellAmountToken, decimals },
+        "exit skipped: requested amount rounds to zero base units"
+      );
+      return;
+    }
+    const amountLamports = total;
+    const actualSellTokenAmount = Number(amountLamports) / Number(scale);
+
     const executionId = this.createExecution({
       convergence: {
         id: current.convergence_id ?? 0,
@@ -192,22 +215,6 @@ export class TradeExecutor {
     });
 
     try {
-      const decimals = Math.max(0, Math.trunc(this.tokenDecimals(current.token_mint)));
-      let actualSellTokenAmount = sellAmountToken;
-      const amountLamports = (() => {
-        // Split integer/fractional parts so high-decimal tokens with large
-        // balances don't lose integer precision via float scaling.
-        if (!Number.isFinite(sellAmountToken) || sellAmountToken <= 0) return 1n;
-        const scale = 10n ** BigInt(decimals);
-        const flooredTokenAmount = Math.floor(sellAmountToken);
-        const intPart = BigInt(flooredTokenAmount);
-        const fracPart = sellAmountToken - flooredTokenAmount;
-        const fracBaseUnits = BigInt(Math.floor(fracPart * Number(scale)));
-        const total = intPart * scale + fracBaseUnits;
-        const sent = total < 1n ? 1n : total;
-        actualSellTokenAmount = Number(sent) / Number(scale);
-        return sent;
-      })();
       const result = await this.swaps.executeSwap({
         inputMint: current.token_mint,
         outputMint: USDC_MINT,

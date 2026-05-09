@@ -51,7 +51,10 @@ function computeFreshWalletFraction(buys: TradeRow[], walletModel: WalletModel):
   for (const addr of wallets) {
     const w = walletModel.find(addr);
     if (!w) { freshCount++; continue; }
-    if (w.added_at > fourteenDaysAgo || w.total_trades < 15) freshCount++;
+    // Use historical trade count as-of referenceTime instead of the live
+    // lifetime counter, so live + replay paths produce the same score.
+    const tradesAsOf = walletModel.countTradesAsOf(addr, referenceTime);
+    if (w.added_at > fourteenDaysAgo || tradesAsOf < 15) freshCount++;
   }
   return freshCount / wallets.length;
 }
