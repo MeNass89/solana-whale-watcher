@@ -32,14 +32,8 @@ const envSchema = z.object({
   PUBLIC_WEBHOOK_URL: z.string().url().optional().or(z.literal("")).default(""),
   CONVERGENCE_WINDOW_MINUTES: z.coerce.number().int().positive().default(120),
   MIN_TRADE_USD: z.coerce.number().nonnegative().default(500),
-  MIN_LIQUIDITY_USD: z.coerce.number().nonnegative().default(50000),
   MIN_TOKEN_AGE_HOURS: z.coerce.number().nonnegative().default(24),
-  DEGEN_MODE: z
-    .string()
-    .default("false")
-    .transform((value) => value === "true"),
   DATABASE_PATH: z.string().default("./data/whale-watcher.sqlite"),
-  TUNNEL_HOSTNAME: z.string().optional().default(""),
   EXECUTION_ENABLED: z
     .string()
     .default("false")
@@ -66,7 +60,6 @@ if (env.NODE_ENV === "production") {
 }
 
 export const config = {
-  nodeEnv: env.NODE_ENV,
   helius: {
     apiKey: env.HELIUS_API_KEY,
     webhookSecret: env.HELIUS_WEBHOOK_SECRET,
@@ -88,13 +81,9 @@ export const config = {
   convergence: {
     windowMinutes: env.CONVERGENCE_WINDOW_MINUTES,
     minTradeUsd: env.MIN_TRADE_USD,
-    minLiquidityUsd: env.MIN_LIQUIDITY_USD,
-    minTokenAgeHours: env.MIN_TOKEN_AGE_HOURS,
-    degenMode: env.DEGEN_MODE,
-    mvpThreshold: 2
+    minTokenAgeHours: env.MIN_TOKEN_AGE_HOURS
   },
   databasePath: env.DATABASE_PATH,
-  tunnelHostname: env.TUNNEL_HOSTNAME,
   execution: {
     enabled: env.EXECUTION_ENABLED,
     mode: env.EXECUTION_MODE,

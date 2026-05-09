@@ -52,12 +52,8 @@ export async function buildServer(deps: ServerDeps) {
   app.get("/api/config", { preHandler: requireAuth }, async () => ({
     convergence: config.convergence,
     host: config.server.host,
-    port: config.server.port,
-    tunnelHostname: config.tunnelHostname
+    port: config.server.port
   }));
-  app.put("/api/config", { preHandler: requireAuth }, async (_request, reply) =>
-    reply.code(501).send({ error: "Runtime config mutation is scheduled after Phase 1" })
-  );
 
   const frontendPath = path.resolve(process.cwd(), "dist/frontend");
   if (fs.existsSync(frontendPath)) {
