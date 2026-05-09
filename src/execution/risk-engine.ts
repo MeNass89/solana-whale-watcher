@@ -258,9 +258,9 @@ export class RiskEngine {
 
   async tokenLiquidityLive(mint: string): Promise<number | null> {
     const overview = await birdEyeClient.getTokenOverview(mint);
-    if (overview?.liquidityUsd) return overview.liquidityUsd;
+    if (overview?.liquidityUsd != null) return overview.liquidityUsd;
     const pair = await dexScreenerClient.getBestPair(mint);
-    if (pair?.liquidityUsd) return pair.liquidityUsd;
+    if (pair?.liquidityUsd != null) return pair.liquidityUsd;
     return this.tokenLiquidity(mint);
   }
 

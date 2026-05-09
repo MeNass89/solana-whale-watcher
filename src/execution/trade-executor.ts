@@ -114,6 +114,7 @@ export class TradeExecutor {
       const amountToken = result.outputAmount;
       const actualEntryPrice = amountToken > 0 ? risk.sizeUsd / amountToken : entryPrice;
       this.fillExecution(executionId, {
+        direction: "BUY",
         amountToken,
         amountUsd: risk.sizeUsd,
         priceUsd: actualEntryPrice,
@@ -153,7 +154,8 @@ export class TradeExecutor {
     if (sellAmountToken <= 0) return;
 
     const amountUsd = sellAmountToken * priceUsd;
-    const slippageBps = this.swaps.slippageBpsForLiquidity(this.liquidityUsd(current.token_mint)) ?? 500;
+    const exitLiquidityUsd = await this.risk.tokenLiquidityLive(current.token_mint);
+    const slippageBps = this.swaps.slippageBpsForLiquidity(exitLiquidityUsd) ?? 500;
     const executionId = this.createExecution({
       convergence: {
         id: current.convergence_id ?? 0,
@@ -184,6 +186,7 @@ export class TradeExecutor {
       const pnlUsd = sellAmountToken * (exitPrice - current.entry_price_usd);
       const pnlPct = ((exitPrice - current.entry_price_usd) / current.entry_price_usd) * 100;
       this.fillExecution(executionId, {
+        direction: "SELL",
         amountToken: sellAmountToken,
         amountUsd: exitUsd,
         priceUsd: exitPrice,
@@ -240,6 +243,7 @@ export class TradeExecutor {
   private fillExecution(
     id: number,
     fill: {
+      direction: "BUY" | "SELL";
       amountToken: number;
       amountUsd: number;
       priceUsd: number;
@@ -249,12 +253,13 @@ export class TradeExecutor {
       exitReason?: string;
     }
   ): void {
+    const isBuy = fill.direction === "BUY";
     this.requireDb()
       .prepare(
         `UPDATE executions
          SET amount_token = ?, amount_usd = ?,
-             entry_price_usd = COALESCE(entry_price_usd, ?),
-             exit_price_usd = COALESCE(exit_price_usd, ?),
+             entry_price_usd = ?,
+             exit_price_usd = ?,
              pnl_usd = ?, pnl_pct = ?, tx_signature = ?, status = 'FILLED',
              exit_reason = COALESCE(?, exit_reason), closed_at = unixepoch()
          WHERE id = ?`
@@ -262,8 +267,8 @@ export class TradeExecutor {
       .run(
         fill.amountToken,
         fill.amountUsd,
-        fill.priceUsd,
-        fill.priceUsd,
+        isBuy ? fill.priceUsd : null,
+        isBuy ? null : fill.priceUsd,
         fill.pnlUsd ?? null,
         fill.pnlPct ?? null,
         fill.txSignature,
@@ -285,12 +290,6 @@ export class TradeExecutor {
     return false;
   }
 
-  private liquidityUsd(mint: string): number | null {
-    const row = this.requireDb().prepare("SELECT liquidity_usd FROM tokens WHERE mint = ?").get(mint) as
-      | { liquidity_usd: number | null }
-      | undefined;
-    return row?.liquidity_usd ?? null;
-  }
 
   private tokenDecimals(mint: string): number {
     const row = this.requireDb().prepare("SELECT decimals FROM tokens WHERE mint = ?").get(mint) as

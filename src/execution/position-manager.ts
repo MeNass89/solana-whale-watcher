@@ -1,4 +1,5 @@
 import type { AlertTier } from "../blockchain/types.js";
+import { config } from "../config/index.js";
 import type { AppDatabase } from "../storage/database.js";
 import type { WalletModel } from "../storage/models/wallets.js";
 import { logger } from "../utils/logger.js";
@@ -321,7 +322,7 @@ export class PositionManager {
        FROM positions WHERE status IN ('OPEN','PARTIAL')`
     ).get() as { value: number }).value ?? 0;
     const cashRow = db.prepare("SELECT value FROM execution_config WHERE key = 'paper_balance_usd'").get() as { value: string } | undefined;
-    const cash = cashRow ? Number(cashRow.value) : 10000;
+    const cash = cashRow ? Number(cashRow.value) : config.execution.paperInitialBalance;
     return cash + openValue;
   }
 
