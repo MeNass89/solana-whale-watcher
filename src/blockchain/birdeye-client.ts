@@ -1,7 +1,15 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { config } from "../config/index.js";
 import { logger } from "../utils/logger.js";
 
 const BIRDEYE_BASE = "https://public-api.birdeye.so";
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const BIRDEYE_RATE_LIMIT_DELAY_MS = 1000;
+
+export interface HistoricalPrice {
+  unixTime: number;
+  value: number;
+}
 
 export interface TokenOverview {
   mint: string;
@@ -24,6 +32,66 @@ export interface WalletPnl {
 
 export class BirdEyeClient {
   constructor(private readonly apiKey = config.birdeye.apiKey) {}
+
+  async getHistoricalPrices(
+    mint: string,
+    fromUnix: number,
+    toUnix: number,
+    type: "1m" | "5m" | "15m" | "1H" | "4H" | "1D" = "5m"
+  ): Promise<HistoricalPrice[]> {
+    if (!this.apiKey) throw new Error("BirdEye API key is required for historical prices");
+
+    const intervalSecByType = {
+      "1m": 60,
+      "5m": 300,
+      "15m": 900,
+      "1H": 3600,
+      "4H": 14400,
+      "1D": 86400
+    } satisfies Record<typeof type, number>;
+    const intervalSec = intervalSecByType[type];
+    const maxCandlesPerCall = 1000;
+    const maxSpanSec = intervalSec * maxCandlesPerCall;
+    const itemsByUnixTime = new Map<number, HistoricalPrice>();
+
+    // BirdEye caps history_price responses at 1,000 candles, so wider ranges
+    // are sliced into sequential windows and deduplicated by candle timestamp.
+    for (let cursor = fromUnix; cursor <= toUnix; cursor += maxSpanSec + 1) {
+      const chunkTo = Math.min(toUnix, cursor + maxSpanSec);
+      const params = new URLSearchParams({
+        address: mint,
+        address_type: "token",
+        type,
+        time_from: String(cursor),
+        time_to: String(chunkTo)
+      });
+      const data = await this.request(`/defi/history_price?${params.toString()}`);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      for (const item of items) {
+        if (Number.isFinite(item?.unixTime) && Number.isFinite(item?.value)) {
+          itemsByUnixTime.set(item.unixTime, { unixTime: item.unixTime, value: item.value });
+        }
+      }
+      if (chunkTo < toUnix) await sleep(BIRDEYE_RATE_LIMIT_DELAY_MS);
+    }
+
+    return [...itemsByUnixTime.values()].sort((a, b) => a.unixTime - b.unixTime);
+  }
+
+  async getSolUsdAt(unixTime: number): Promise<number | null> {
+    if (!this.apiKey) return null;
+    try {
+      const params = new URLSearchParams({
+        address: SOL_MINT,
+        unixtime: String(unixTime)
+      });
+      const data = await this.request(`/defi/historical_price_unix?${params.toString()}`);
+      return Number.isFinite(data?.value) ? data.value : null;
+    } catch (error) {
+      logger.warn({ unixTime, err: error instanceof Error ? error : new Error(String(error)) }, "birdeye: getSolUsdAt failed");
+      return null;
+    }
+  }
 
   async getTokenOverview(mint: string): Promise<TokenOverview | null> {
     if (!this.apiKey) return null;

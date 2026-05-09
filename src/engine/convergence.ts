@@ -14,6 +14,10 @@ import { tradeExecutor } from "../execution/trade-executor.js";
 import { discoverCoBuyers } from "../jobs/co-buyer-scanner.js";
 import { logger } from "../utils/logger.js";
 
+// V1 alpha trigger: require meaningful 30d realized SOL profit across enough closed cycles.
+const TOP_ALPHA_REALIZED_SOL_30D = 100;
+const TOP_ALPHA_MIN_CLOSED_30D = 5;
+
 export class ConvergenceEngine {
   constructor(
     private readonly trades: TradeModel,
@@ -48,7 +52,6 @@ export class ConvergenceEngine {
     if (this.db) {
       const signals = computeManipulationSignals(recentBuys, recentSells, this.wallets, this.db);
       score = applyManipulationPenalty(score, signals);
-      if (score < 10) return null;
     }
 
     let tier: "CRITICAL" | "NOTABLE" | "WATCH" = score >= 75 ? "CRITICAL" : score >= 40 ? "NOTABLE" : "WATCH";
@@ -67,7 +70,32 @@ export class ConvergenceEngine {
       }
     }
 
-    if (this.convergences.wasRecentlyAlerted(newTrade.tokenMint, tier, 30)) return null;
+    const quality = this.wallets.qualityFor([...uniqueWallets]);
+    const triggers = [...uniqueWallets].map((addr) => quality.get(addr)).filter(Boolean);
+
+    const allBad =
+      triggers.length > 0 &&
+      triggers.every(
+        (q) =>
+          q!.wallet_class === "loser" ||
+          q!.wallet_class === "accumulation_bot" ||
+          (q!.wallet_class === "incomplete" && q!.n_closed_30d === 0)
+      );
+    if (allBad) {
+      logger.info({ token: newTrade.tokenMint, walletCount: uniqueWallets.size }, "convergence rejected: no proven-alpha trigger");
+      return null;
+    }
+
+    const hasTopAlpha = triggers.some(
+      (q) => q!.realized_sol_30d > TOP_ALPHA_REALIZED_SOL_30D && q!.n_closed_30d >= TOP_ALPHA_MIN_CLOSED_30D
+    );
+    const avgPnl = triggers.reduce((sum, q) => sum + (q!.realized_sol_30d ?? 0), 0) / Math.max(triggers.length, 1);
+
+    if (hasTopAlpha) {
+      if (tier === "WATCH") tier = "NOTABLE";
+      else if (tier === "NOTABLE") tier = "CRITICAL";
+      logger.info({ token: newTrade.tokenMint, avgPnl, hasTopAlpha: true }, "tier boosted by alpha trigger");
+    }
 
     const convergence = this.convergences.create({
       tokenMint: newTrade.tokenMint,

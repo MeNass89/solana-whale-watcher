@@ -1,7 +1,7 @@
 import { config } from "../config/index.js";
 import { birdEyeClient } from "../blockchain/birdeye-client.js";
 import { dexScreenerClient } from "../blockchain/dexscreener-client.js";
-import type { AlertTier } from "../blockchain/types.js";
+import { jupiterClient } from "./jupiter-client.js";
 import type { AppDatabase } from "../storage/database.js";
 import type { ConvergenceRow } from "../storage/models/convergences.js";
 import type { TradeRow } from "../storage/models/trades.js";
@@ -19,25 +19,25 @@ export interface RiskCheck {
 type RiskPhase = "cold_start" | "validated" | "mature";
 
 interface PhaseLimits {
-  base: number;
-  notable: number;
-  critical: number;
   cap: number;
   maxExposure: number;
   maxPositions: number;
 }
 
 const PHASE_LIMITS: Record<RiskPhase, PhaseLimits> = {
-  cold_start: { base: 0.5, notable: 0.75, critical: 1.0, cap: 3, maxExposure: 40, maxPositions: 15 },
-  validated: { base: 1.0, notable: 1.5, critical: 2.0, cap: 5, maxExposure: 50, maxPositions: 15 },
-  mature: { base: 1.5, notable: 2.25, critical: 3.0, cap: 5, maxExposure: 60, maxPositions: 15 }
+  cold_start: { cap: 3, maxExposure: 40, maxPositions: 15 },
+  validated: { cap: 5, maxExposure: 50, maxPositions: 15 },
+  mature: { cap: 5, maxExposure: 60, maxPositions: 15 }
 };
 
 const MAX_POSITION_POOL_TVL_PCT = 0.5;
-const MIN_POOL_TVL_USD = 25_000;
+const TVL_HARD_FLOOR_USD = 5_000;
+const TVL_SMALL_BRACKET_USD = 25_000;
+const TVL_MEDIUM_BRACKET_USD = 100_000;
+const TVL_SMALL_CAP_PCT = 0.2;
+const TVL_MEDIUM_CAP_PCT = 0.5;
+
 const MAX_HONEYPOT_ROUNDTRIP_LOSS_PCT = 8;
-const MAX_FIRST_WHALE_MOVE_PCT = 15;
-const MIN_WHALE_BUY_USD = 25_000;
 const MAX_TOP_10_HOLDERS_PCT = 40;
 const MIN_TOKEN_AGE_HOURS = 24;
 const NEW_TOKEN_MIN_LP_USD = 50_000;
@@ -46,7 +46,11 @@ const PORTFOLIO_HEAT_CAP_PCT = 6;
 const SOL_RESERVE = 5;
 const MAX_POSITION_PORTFOLIO_PCT = 3;
 const MAX_POSITION_USD = 2000;
-const MAX_PRE_ENTRY_PUMP_PCT = 300;
+
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const MIRROR_MIN_PCT = 0.3;
+const MIRROR_MAX_PCT = 5.0;
+const MIRROR_FALLBACK_PCT = 1.0;
 
 export class RiskEngine {
   constructor(private db: AppDatabase | null = null) {}
@@ -56,61 +60,43 @@ export class RiskEngine {
     this.ensurePaperBalance();
   }
 
-  async checkEntry(convergence: ConvergenceRow, trades: TradeRow[], entryPriceUsd: number): Promise<RiskCheck> {
+  async checkEntry(convergence: ConvergenceRow, trades: TradeRow[], _entryPriceUsd: number): Promise<RiskCheck> {
     const db = this.requireDb();
     const phase = this.phase();
     const limits = PHASE_LIMITS[phase];
     const portfolioValueUsd = this.portfolioValueUsd();
-    const baseSizePct = sizeForTier(convergence.tier, limits);
-    const volatility = this.numberConfig(`token:${convergence.token_mint}:realized_vol_24h_pct`);
-    const volAdj = volatility && volatility > 0 ? Math.min(1, 50 / volatility) : 1;
-    if (volatility !== null && volatility > 300) {
-      return { allowed: false, reason: `volatility ${volatility.toFixed(0)}% exceeds 300% ceiling`, phase, portfolioValueUsd };
-    }
-    if (volatility === null || volatility === 0) {
-      return { allowed: false, reason: "volatility data unavailable — cannot size position", phase, portfolioValueUsd };
-    }
-    const drawdownHalve = this.stringConfig("drawdown_halve_sizes") === "true" ? 0.5 : 1;
-    let adjustedSizePct = Math.min(limits.cap, baseSizePct * volAdj * drawdownHalve);
 
     const circuitBreaker = this.circuitBreakerReason(portfolioValueUsd);
     if (circuitBreaker) return { allowed: false, reason: circuitBreaker, phase, portfolioValueUsd };
 
     const liquidityUsd = await this.tokenLiquidityLive(convergence.token_mint);
     if (liquidityUsd === null) return { allowed: false, reason: "pool TVL unavailable", phase, portfolioValueUsd };
-    if (liquidityUsd < MIN_POOL_TVL_USD) return { allowed: false, reason: `pool TVL $${Math.round(liquidityUsd)} below $${MIN_POOL_TVL_USD / 1000}k minimum`, phase, portfolioValueUsd };
-    if (liquidityUsd < 50_000) {
-      const memePenalty = Math.max(0.25, liquidityUsd / 50_000);
-      adjustedSizePct = Math.min(adjustedSizePct * memePenalty, limits.cap);
+    if (liquidityUsd < TVL_HARD_FLOOR_USD) {
+      return { allowed: false, reason: `pool TVL $${Math.round(liquidityUsd)} below $${TVL_HARD_FLOOR_USD / 1000}k floor`, phase, portfolioValueUsd };
     }
+
+    const tvlBracketCapPct =
+      liquidityUsd < TVL_SMALL_BRACKET_USD ? TVL_SMALL_CAP_PCT
+      : liquidityUsd < TVL_MEDIUM_BRACKET_USD ? TVL_MEDIUM_CAP_PCT
+      : limits.cap;
+
+    const mirrorPct = await this.computeMirrorSizePct(trades, portfolioValueUsd);
+    const volatility = this.numberConfig(`token:${convergence.token_mint}:realized_vol_24h_pct`);
+    const volAdj = volatility && volatility > 0 ? Math.min(1, 50 / volatility) : 1;
+    const drawdownHalve = this.stringConfig("drawdown_halve_sizes") === "true" ? 0.5 : 1;
+
+    let adjustedSizePct = Math.min(tvlBracketCapPct, mirrorPct * volAdj * drawdownHalve);
+    adjustedSizePct = Math.max(MIRROR_MIN_PCT, adjustedSizePct);
+
     const sizeUsd = (portfolioValueUsd * adjustedSizePct) / 100;
     if ((sizeUsd / liquidityUsd) * 100 > MAX_POSITION_POOL_TVL_PCT) {
       return { allowed: false, reason: "position exceeds 0.5% of pool TVL", phase, portfolioValueUsd };
-    }
-
-    const maxWhaleBuyUsd = Math.max(...trades.map((trade) => trade.amount_usd ?? 0));
-    if (maxWhaleBuyUsd < MIN_WHALE_BUY_USD) return { allowed: false, reason: "whale buy below $25k", phase, portfolioValueUsd };
-
-    const firstWhalePrice = this.numberConfig(`token:${convergence.token_mint}:first_whale_price_usd`);
-    if (firstWhalePrice && Math.abs(((entryPriceUsd - firstWhalePrice) / firstWhalePrice) * 100) > MAX_FIRST_WHALE_MOVE_PCT) {
-      return { allowed: false, reason: "token moved more than 15% since first whale fill", phase, portfolioValueUsd };
-    }
-
-    const creationPrice = this.numberConfig(`token:${convergence.token_mint}:creation_price_usd`);
-    if (creationPrice && creationPrice > 0) {
-      const pumpPct = ((entryPriceUsd - creationPrice) / creationPrice) * 100;
-      if (pumpPct > MAX_PRE_ENTRY_PUMP_PCT) {
-        return { allowed: false, reason: `token already pumped ${Math.round(pumpPct)}% from creation (max ${MAX_PRE_ENTRY_PUMP_PCT}%)`, phase, portfolioValueUsd };
-      }
     }
 
     const honeypotLoss = this.numberConfig(`token:${convergence.token_mint}:honeypot_roundtrip_loss_pct`);
     if (honeypotLoss !== null && honeypotLoss > MAX_HONEYPOT_ROUNDTRIP_LOSS_PCT) {
       return { allowed: false, reason: "honeypot roundtrip loss above 8%", phase, portfolioValueUsd };
     }
-
-    const mintRenounced = this.stringConfig(`token:${convergence.token_mint}:mint_authority_renounced`);
-    if (mintRenounced === "false") return { allowed: false, reason: "mint authority not renounced", phase, portfolioValueUsd };
 
     const top10Pct = this.numberConfig(`token:${convergence.token_mint}:top10_holders_pct`);
     if (top10Pct !== null && top10Pct > MAX_TOP_10_HOLDERS_PCT) {
@@ -151,6 +137,20 @@ export class RiskEngine {
     const finalSizePct = (finalSizeUsd / portfolioValueUsd) * 100;
 
     return { allowed: true, adjustedSizePct: finalSizePct, phase, portfolioValueUsd, sizeUsd: finalSizeUsd };
+  }
+
+  private async computeMirrorSizePct(trades: TradeRow[], portfolioValueUsd: number): Promise<number> {
+    if (portfolioValueUsd <= 0) return MIRROR_FALLBACK_PCT;
+    const buys = trades.filter((trade) => trade.trade_type === "BUY");
+    const solAmounts = buys.map((trade) => trade.amount_sol ?? 0).filter((value) => value > 0);
+    if (solAmounts.length === 0) return MIRROR_FALLBACK_PCT;
+    solAmounts.sort((a, b) => a - b);
+    const median = solAmounts[Math.floor(solAmounts.length / 2)];
+    const solPriceUsd = await jupiterClient.getPriceUsd(SOL_MINT).catch(() => null);
+    if (!solPriceUsd || solPriceUsd <= 0) return MIRROR_FALLBACK_PCT;
+    const targetUsd = median * solPriceUsd;
+    const targetPct = (targetUsd / portfolioValueUsd) * 100;
+    return Math.max(MIRROR_MIN_PCT, Math.min(MIRROR_MAX_PCT, targetPct));
   }
 
   recordJupiterError(): void {
@@ -380,12 +380,6 @@ export class RiskEngine {
     if (!this.db) throw new Error("RiskEngine is not configured");
     return this.db;
   }
-}
-
-function sizeForTier(tier: AlertTier, limits: PhaseLimits): number {
-  if (tier === "CRITICAL") return limits.critical;
-  if (tier === "NOTABLE") return limits.notable;
-  return limits.base;
 }
 
 export const riskEngine = new RiskEngine();

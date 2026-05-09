@@ -12,6 +12,7 @@ import { checkWebhookHealth } from "./jobs/webhook-health.js";
 import { runPriceTracker } from "./jobs/price-tracker.js";
 import { runTokenMetadata } from "./jobs/token-metadata.js";
 import { runWalletScorer } from "./jobs/wallet-scorer.js";
+import { runLeaderboardRefresh } from "./jobs/leaderboard-refresh.js";
 import { openDatabase } from "./storage/database.js";
 import { ConvergenceModel } from "./storage/models/convergences.js";
 import { TokenModel } from "./storage/models/tokens.js";
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
   tradeExecutor.configure({ db, risk: riskEngine, positions: positionManager });
   positionManager.configure({
     db,
+    wallets,
     exitHandler: (position, reason, sellPct, panicExit) => tradeExecutor.exitPosition(position, reason, sellPct, panicExit)
   });
   if (config.execution.enabled) positionManager.start();
@@ -70,6 +72,14 @@ async function main(): Promise<void> {
   setInterval(() => {
     const now = new Date();
     if (now.getHours() === 9 && now.getMinutes() === 43) scorerJob();
+  }, 60 * 1000);
+
+  const leaderboardJob = () => runLeaderboardRefresh().catch((err) => {
+    logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "leaderboard-refresh: job failed");
+  });
+  setInterval(() => {
+    const now = new Date();
+    if (now.getHours() === 6 && now.getMinutes() === 0) leaderboardJob();
   }, 60 * 1000);
 
   const webhookHealthJob = () => checkWebhookHealth(helius, config.helius.webhookId, config.server.publicWebhookUrl, new DiscordAlerter(), wallets).catch((err) => {

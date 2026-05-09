@@ -1,5 +1,6 @@
 import type { AlertTier } from "../blockchain/types.js";
 import type { AppDatabase } from "../storage/database.js";
+import type { WalletModel } from "../storage/models/wallets.js";
 import { logger } from "../utils/logger.js";
 import { unixNow } from "../utils/helpers.js";
 import type { JupiterClient } from "./jupiter-client.js";
@@ -63,14 +64,16 @@ const MAX_CONSECUTIVE_NULL_PRICES = 5;
 
 export class PositionManager {
   private db: AppDatabase | null = null;
+  private wallets: WalletModel | null = null;
   private priceClient: JupiterClient = jupiterClient;
   private exitHandler: ExitHandler | null = null;
   private timer: NodeJS.Timeout | null = null;
   private checking = false;
   private nullPriceCounts = new Map<number, number>();
 
-  configure(input: { db: AppDatabase; priceClient?: JupiterClient; exitHandler?: ExitHandler }): void {
+  configure(input: { db: AppDatabase; wallets?: WalletModel; priceClient?: JupiterClient; exitHandler?: ExitHandler }): void {
     this.db = input.db;
+    this.wallets = input.wallets ?? null;
     this.priceClient = input.priceClient ?? jupiterClient;
     this.exitHandler = input.exitHandler ?? null;
   }
@@ -163,8 +166,15 @@ export class PositionManager {
   async onWhaleSell(walletAddress: string, tokenMint: string, sellPct: number): Promise<void> {
     if (sellPct < 20) return;
     const positions = this.listOpen().filter((position) => position.token_mint === tokenMint);
+    if (positions.length === 0) return;
+    if (this.wallets) {
+      const quality = this.wallets.qualityFor([walletAddress]).get(walletAddress);
+      if (quality && (quality.wallet_class === "loser" || quality.wallet_class === "accumulation_bot")) {
+        logger.info({ wallet: walletAddress, mint: tokenMint, class: quality.wallet_class }, "whale sell ignored: untrusted wallet class");
+        return;
+      }
+    }
     for (const position of positions) {
-      if (!this.walletParticipated(position.convergence_id, walletAddress)) continue;
       const count = this.recordBehavioralSell(position.id, walletAddress);
       if (count >= 2) {
         await this.exit(position, "BEHAVIORAL_2_WHALES_SELLING", 100, false);
@@ -319,19 +329,6 @@ export class PositionManager {
     return this.requireDb()
       .prepare("SELECT * FROM positions WHERE status IN ('OPEN','PARTIAL') ORDER BY opened_at ASC")
       .all() as PositionRow[];
-  }
-
-  private walletParticipated(convergenceId: number | null, walletAddress: string): boolean {
-    if (!convergenceId) return false;
-    return Boolean(
-      this.requireDb()
-        .prepare(
-          `SELECT 1 FROM convergence_trades ct
-           JOIN trades t ON t.id = ct.trade_id
-           WHERE ct.convergence_id = ? AND t.wallet_address = ? LIMIT 1`
-        )
-        .get(convergenceId, walletAddress)
-    );
   }
 
   private recordBehavioralSell(positionId: number, walletAddress: string): number {

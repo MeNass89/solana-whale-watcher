@@ -16,6 +16,12 @@ export interface WalletRow {
   last_scored_at: number | null;
 }
 
+export interface WalletQuality {
+  realized_sol_30d: number;
+  n_closed_30d: number;
+  wallet_class: string;
+}
+
 export class WalletModel {
   constructor(private readonly db: AppDatabase) {}
 
@@ -96,6 +102,22 @@ export class WalletModel {
       .prepare(`SELECT address, score FROM wallets WHERE address IN (${addresses.map(() => "?").join(",")})`)
       .all(...addresses) as Array<{ address: string; score: number }>;
     return new Map(rows.map((row) => [row.address, row.score]));
+  }
+
+  qualityFor(addresses: string[]): Map<string, WalletQuality> {
+    if (addresses.length === 0) return new Map();
+    const rows = this.db
+      .prepare(
+        `SELECT address, realized_sol_30d, n_closed_30d, wallet_class
+         FROM wallets
+         WHERE address IN (${addresses.map(() => "?").join(",")})`
+      )
+      .all(...addresses) as Array<{ address: string } & WalletQuality>;
+    return new Map(rows.map((row) => [row.address, {
+      realized_sol_30d: row.realized_sol_30d,
+      n_closed_30d: row.n_closed_30d,
+      wallet_class: row.wallet_class
+    }]));
   }
 
   markTrade(address: string, blockTime: number): void {

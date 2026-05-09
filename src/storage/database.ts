@@ -25,8 +25,33 @@ export function runMigrations(db: AppDatabase): void {
     .sort();
 
   for (const file of migrationFiles) {
+    if (file === "004_wallet_pnl_tracking.sql") {
+      runWalletPnlTrackingMigration(db);
+      continue;
+    }
     const sql = fs.readFileSync(path.join(migrationsPath, file), "utf8");
     db.exec(sql);
   }
   logger.info("SQLite migrations applied");
+}
+
+function runWalletPnlTrackingMigration(db: AppDatabase): void {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(wallets)").all() as Array<{ name: string }>).map((column) => column.name)
+  );
+
+  const tx = db.transaction(() => {
+    if (!columns.has("realized_sol_30d")) {
+      db.exec("ALTER TABLE wallets ADD COLUMN realized_sol_30d REAL DEFAULT 0");
+    }
+    if (!columns.has("n_closed_30d")) {
+      db.exec("ALTER TABLE wallets ADD COLUMN n_closed_30d INTEGER DEFAULT 0");
+    }
+    if (!columns.has("wallet_class")) {
+      db.exec("ALTER TABLE wallets ADD COLUMN wallet_class TEXT DEFAULT 'unknown'");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_wallets_class ON wallets(wallet_class)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_wallets_realized_sol ON wallets(realized_sol_30d DESC)");
+  });
+  tx();
 }
