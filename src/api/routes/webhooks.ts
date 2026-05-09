@@ -3,6 +3,7 @@ import { verifyHeliusHmac } from "../middleware/hmac.js";
 import { parseEnhancedTransactions, isRapidReversal } from "../../blockchain/transaction-parser.js";
 import type { AlertManager } from "../../engine/alert-manager.js";
 import type { ConvergenceEngine } from "../../engine/convergence.js";
+import type { AppDatabase } from "../../storage/database.js";
 import type { ConvergenceModel } from "../../storage/models/convergences.js";
 import type { TradeModel } from "../../storage/models/trades.js";
 import type { WalletModel } from "../../storage/models/wallets.js";
@@ -16,6 +17,7 @@ const WHALE_ALERT_MIN_SCORE = 40;
 export async function registerWebhookRoutes(
   app: FastifyInstance,
   deps: {
+    db: AppDatabase;
     wallets: WalletModel;
     trades: TradeModel;
     convergences: ConvergenceModel;
@@ -34,6 +36,9 @@ export async function registerWebhookRoutes(
         logger.info({ wallet: logWallet(trade.walletAddress), token: trade.tokenMint, type: trade.tradeType }, "rapid-reversal filtered (MEV suspect) — not persisted");
         continue;
       }
+      const preSellBalance = trade.tradeType === "SELL"
+        ? computePreSellBalance(deps.db, trade.walletAddress, trade.tokenMint)
+        : 0;
       const inserted = deps.trades.insert(trade);
       if (!inserted) continue;
       deps.wallets.markTrade(trade.walletAddress, trade.blockTime);
@@ -45,7 +50,7 @@ export async function registerWebhookRoutes(
       }
 
       if (trade.tradeType === "SELL") {
-        const sellPct = estimateSellPct(deps.trades, trade.walletAddress, trade.tokenMint, trade.amountToken);
+        const sellPct = trade.amountToken && preSellBalance > 0 ? (trade.amountToken / preSellBalance) * 100 : 0;
         await positionManager.onWhaleSell(trade.walletAddress, trade.tokenMint, sellPct);
       }
 
@@ -60,10 +65,15 @@ export async function registerWebhookRoutes(
   });
 }
 
-function estimateSellPct(trades: TradeModel, walletAddress: string, tokenMint: string, amountToken?: number): number {
-  if (!amountToken || amountToken <= 0) return 100;
-  const buys = trades.findByWalletToken(walletAddress, tokenMint, "BUY");
-  const totalBought = buys.reduce((sum, trade) => sum + (trade.amount_token ?? 0), 0);
-  if (totalBought <= 0) return 100;
-  return (amountToken / totalBought) * 100;
+function computePreSellBalance(db: AppDatabase, walletAddress: string, tokenMint: string): number {
+  const row = db
+    .prepare(
+      `SELECT
+        COALESCE(SUM(CASE WHEN trade_type = 'BUY' THEN amount_token ELSE 0 END), 0) AS bought,
+        COALESCE(SUM(CASE WHEN trade_type = 'SELL' THEN amount_token ELSE 0 END), 0) AS sold
+       FROM trades
+       WHERE wallet_address = ? AND token_mint = ?`
+    )
+    .get(walletAddress, tokenMint) as { bought: number; sold: number };
+  return Math.max(0, row.bought - row.sold);
 }

@@ -76,6 +76,23 @@ export class WalletModel {
       });
   }
 
+  insertIfMissing(input: { address: string; label?: string; source?: WalletSource; state?: WalletState; active?: boolean }): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT INTO wallets (address, label, source, state, active)
+         VALUES (@address, @label, @source, @state, @active)
+         ON CONFLICT(address) DO NOTHING`
+      )
+      .run({
+        address: input.address,
+        label: input.label ?? null,
+        source: input.source ?? "manual",
+        state: input.state ?? "NEW",
+        active: input.active === false ? 0 : 1
+      });
+    return result.changes > 0;
+  }
+
   update(address: string, input: Partial<{ label: string; source: WalletSource; state: WalletState; active: boolean }>): void {
     const current = this.find(address);
     if (!current) throw new Error("Wallet not found");

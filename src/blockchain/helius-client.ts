@@ -96,9 +96,10 @@ export class HeliusClient implements IChainMonitor {
 
       const response = await fetch(url);
       if (!response.ok) {
-        // Rate-limit / server errors should surface to callers so the scorer can
-        // log and retry next cycle; other 4xx responses stop pagination cleanly.
-        if (response.status === 429 || response.status >= 500) {
+        // Rate-limit, auth, and server errors should surface to callers so the
+        // scorer can log/retry; treating 401/403 as pagination end truncates
+        // recent activity when the key expires or is unauthorized.
+        if (response.status === 429 || response.status === 401 || response.status === 403 || response.status >= 500) {
           throw new HeliusRequestError(response.status, `Helius getWalletTransactions failed (${response.status})`);
         }
         logger.warn({ address, status: response.status, beforeSignature }, "getWalletTransactions: non-OK 4xx, stopping pagination");

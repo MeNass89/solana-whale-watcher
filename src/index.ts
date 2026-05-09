@@ -141,7 +141,7 @@ async function main(): Promise<void> {
     try { db.pragma("wal_checkpoint(PASSIVE)"); } catch {}
   }, 4 * 60 * 60 * 1000);
 
-  const app = await buildServer({ wallets, trades, convergences, engine, alerts });
+  const app = await buildServer({ db, wallets, trades, convergences, engine, alerts });
 
   await app.listen({ host: config.server.host, port: config.server.port });
   logger.info({ host: config.server.host, port: config.server.port }, "server started");

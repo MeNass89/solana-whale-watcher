@@ -157,8 +157,9 @@ export class JupiterClient {
 
     await this.assertNetworkHealthy();
     const quote = await this.freshQuote(params);
-    if (quote.priceImpactPct && Number(quote.priceImpactPct) > 3) {
-      throw new Error(`Price impact ${quote.priceImpactPct}% exceeds 3% limit`);
+    const allowedImpactPct = params.slippageBps != null ? params.slippageBps / 100 : 3;
+    if (quote.priceImpactPct && Number(quote.priceImpactPct) > allowedImpactPct) {
+      throw new Error(`Price impact ${quote.priceImpactPct}% exceeds ${allowedImpactPct}% limit`);
     }
     const beforeBalance = await this.tokenBalance(params.outputMint);
     const swap = await this.buildSwapTransaction(quote, params);
@@ -179,7 +180,7 @@ export class JupiterClient {
 
     return {
       txSignature: signature,
-      inputAmount: await this.rawAmountToUi(params.inputMint, BigInt(quote.inAmount), quote.inputDecimals),
+      inputAmount: await this.rawAmountToUi(params.inputMint, params.amountLamports, quote.inputDecimals),
       outputAmount: await this.rawAmountToUi(params.outputMint, BigInt(quote.outAmount), quote.outputDecimals),
       priceImpactPct: Number(quote.priceImpactPct ?? 0),
       executedAt: Math.floor(Date.now() / 1000)
@@ -191,9 +192,13 @@ export class JupiterClient {
       logger.warn({ error }, "Jupiter paper quote unavailable; using price fallback");
       return null;
     });
-    const inputAmount = quote
-      ? await this.rawAmountToUi(params.inputMint, BigInt(quote.inAmount), quote.inputDecimals)
-      : await this.rawAmountToUi(params.inputMint, params.amountLamports);
+    const inputAmount = await this.rawAmountToUi(params.inputMint, params.amountLamports, quote?.inputDecimals);
+    if (quote && BigInt(quote.inAmount) !== params.amountLamports) {
+      logger.warn(
+        { inputMint: params.inputMint, requested: params.amountLamports.toString(), quoted: quote.inAmount },
+        "jupiter: quote.inAmount does not match requested amountLamports"
+      );
+    }
     let outputAmount: number;
     if (quote) {
       outputAmount = await this.rawAmountToUi(params.outputMint, BigInt(quote.outAmount), quote.outputDecimals);

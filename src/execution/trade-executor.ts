@@ -136,13 +136,17 @@ export class TradeExecutor {
         entryPriceUsd: actualEntryPrice,
         tier: convergence.tier
       });
-      await this.notify("ENTRY_FILLED", convergence, [
-        { name: "Mode", value: config.execution.mode.toUpperCase(), inline: true },
-        { name: "Size", value: `${formatUsd(risk.sizeUsd)} (${risk.adjustedSizePct.toFixed(2)}%)`, inline: true },
-        { name: "Entry", value: formatUsd(actualEntryPrice), inline: true },
-        { name: "Stop", value: formatUsd(position.stop_loss_price), inline: true },
-        { name: "Position", value: String(position.id), inline: true }
-      ]);
+      try {
+        await this.notify("ENTRY_FILLED", convergence, [
+          { name: "Mode", value: config.execution.mode.toUpperCase(), inline: true },
+          { name: "Size", value: `${formatUsd(risk.sizeUsd)} (${risk.adjustedSizePct.toFixed(2)}%)`, inline: true },
+          { name: "Entry", value: formatUsd(actualEntryPrice), inline: true },
+          { name: "Stop", value: formatUsd(position.stop_loss_price), inline: true },
+          { name: "Position", value: String(position.id), inline: true }
+        ]);
+      } catch (notifyErr) {
+        logger.warn({ err: notifyErr }, "trade-executor: entry notification failed (non-fatal)");
+      }
     } catch (error) {
       this.failExecution(executionId, error);
       this.risk.recordFailedTransaction();
@@ -184,12 +188,13 @@ export class TradeExecutor {
       const result = await this.swaps.executeSwap({
         inputMint: current.token_mint,
         outputMint: USDC_MINT,
-        // Multiply in BigInt space — for high-decimal tokens with large balances,
-        // sellAmountToken * 10**decimals can exceed Number.MAX_SAFE_INTEGER (2^53)
-        // and silently truncate, corrupting exit P&L.
         amountLamports: (() => {
-          const tokenInteger = BigInt(Math.max(1, Math.round(sellAmountToken)));
-          return tokenInteger * (10n ** BigInt(decimals));
+          // Scale to base units before rounding so fractional token exits keep
+          // their value through the conversion.
+          const scale = 10 ** decimals;
+          const baseUnitsFloat = sellAmountToken * scale;
+          if (!Number.isFinite(baseUnitsFloat) || baseUnitsFloat < 1) return 1n;
+          return BigInt(Math.floor(baseUnitsFloat).toString());
         })(),
         slippageBps,
         isExitSwap: true,
@@ -219,7 +224,11 @@ export class TradeExecutor {
       if (config.execution.mode === "paper") this.risk.updatePaperBalance(exitUsd);
       const remaining = Math.max(0, current.amount_token - sellAmountToken);
       this.positions.markExit(current, remaining, exitPrice, reason);
-      await this.notifyPositionExit(current, reason, pnlUsd, pnlPct);
+      try {
+        await this.notifyPositionExit(current, reason, pnlUsd, pnlPct);
+      } catch (notifyErr) {
+        logger.warn({ err: notifyErr, positionId: current.id }, "trade-executor: exit notification failed (non-fatal)");
+      }
     } catch (error) {
       this.failExecution(executionId, error);
       this.risk.recordFailedTransaction();

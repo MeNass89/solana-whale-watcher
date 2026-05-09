@@ -57,6 +57,28 @@ describe("position startup audit", () => {
     expect(position.status).toBe("OPEN");
     expect(position.exit_reason).toBeNull();
   });
+
+  it("quarantines open positions without convergence backing", () => {
+    const db = setupDb();
+    db.pragma("foreign_keys = OFF");
+    db.prepare(
+      `INSERT INTO positions
+        (token_mint, token_symbol, convergence_id, amount_token, entry_price_usd, current_price_usd, tier, status)
+       VALUES ('mint-orphan', 'ORPHAN', 9999, 100, 0.001, 0.0012, 'NOTABLE', 'OPEN')`
+    ).run();
+    db.pragma("foreign_keys = ON");
+
+    const result = auditOpenPositions(db);
+    const position = db.prepare("SELECT status, exit_reason FROM positions WHERE token_mint = 'mint-orphan'").get() as {
+      status: string;
+      exit_reason: string | null;
+    };
+
+    expect(result.quarantined).toBe(1);
+    expect(result.reasons).toContain("no convergence backing (orphaned position)");
+    expect(position.status).toBe("CLOSED");
+    expect(position.exit_reason).toContain("no convergence backing");
+  });
 });
 
 function setupDb(): AppDatabase {

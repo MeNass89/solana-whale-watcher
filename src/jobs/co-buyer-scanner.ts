@@ -21,13 +21,13 @@ export async function discoverCoBuyers(
 
   let discovered = 0;
   for (const row of rows) {
-    if (wallets.find(row.wallet_address)) continue;
-    wallets.upsert({
+    const inserted = wallets.insertIfMissing({
       address: row.wallet_address,
       source: "co-buyer",
       state: "NEW",
       active: true
     });
+    if (!inserted) continue;
     discovered++;
     logger.info({ address: row.wallet_address.substring(0, 12), tokenMint: tokenMint.substring(0, 12) }, "co-buyer-scanner: discovered new wallet");
   }

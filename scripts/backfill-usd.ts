@@ -144,7 +144,9 @@ async function main(): Promise<void> {
         continue;
       }
 
-      const bucket = Math.floor(trade.block_time / 3600);
+      // 5-minute granularity keeps SOL/USD fallback prices from depending on
+      // whichever trade happened to seed a whole-hour cache bucket first.
+      const bucket = Math.floor(trade.block_time / 300);
       let cached = solUsdCache.get(bucket);
       if (!cached) {
         const unixTime = trade.block_time;
