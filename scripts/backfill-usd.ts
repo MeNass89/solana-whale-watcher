@@ -113,7 +113,10 @@ async function main(): Promise<void> {
     for (const trade of trades) {
       const candle = nearestCandle(prices, trade.block_time);
       if (candle && trade.amount_token != null) {
-        const usd = trade.amount_token * candle.value;
+        // Sells may be stored with negative amount_token; the absolute value
+        // is what gets multiplied by the candle price, otherwise every exit
+        // trade ends up with a negative USD that the > 0 guard discards.
+        const usd = Math.abs(trade.amount_token) * candle.value;
         if (Number.isFinite(usd) && usd > 0 && updateUsd.run(usd, trade.id).changes > 0) {
           filledBirdeye += 1;
           continue;
@@ -147,7 +150,7 @@ async function main(): Promise<void> {
         continue;
       }
 
-      const usd = trade.amount_sol * cached.value;
+      const usd = Math.abs(trade.amount_sol) * cached.value;
       if (Number.isFinite(usd) && usd > 0 && updateUsd.run(usd, trade.id).changes > 0) {
         filledSolLeg += 1;
       } else {

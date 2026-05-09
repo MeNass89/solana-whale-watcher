@@ -8,12 +8,16 @@ describe("price sanity checks", () => {
     expect(isSanePrice(-1)).toBe(false);
   });
 
-  it("rejects prices below 1e-15", () => {
+  // Contract: isSanePrice accepts the open interval (1e-15, 1e6).
+  // Boundary values themselves are rejected — this is intentional, since
+  // exact 1e-15 / 1e6 quotes are far more likely to be a stale or stuck
+  // feed than a real meme-coin / large-cap price.
+  it("rejects prices at or below 1e-15", () => {
     expect(isSanePrice(1e-16)).toBe(false);
     expect(isSanePrice(1e-15)).toBe(false);
   });
 
-  it("rejects prices above 1e6", () => {
+  it("rejects prices at or above 1e6", () => {
     expect(isSanePrice(1_000_000)).toBe(false);
     expect(isSanePrice(1_000_001)).toBe(false);
   });

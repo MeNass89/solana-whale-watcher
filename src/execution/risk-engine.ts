@@ -6,6 +6,7 @@ import type { AppDatabase } from "../storage/database.js";
 import type { ConvergenceRow } from "../storage/models/convergences.js";
 import type { TradeRow } from "../storage/models/trades.js";
 import { unixNow } from "../utils/helpers.js";
+import { logger } from "../utils/logger.js";
 
 export interface RiskCheck {
   allowed: boolean;
@@ -259,7 +260,12 @@ export class RiskEngine {
   async tokenLiquidityLive(mint: string): Promise<number | null> {
     const overview = await birdEyeClient.getTokenOverview(mint);
     if (overview?.liquidityUsd != null) return overview.liquidityUsd;
-    const pair = await dexScreenerClient.getBestPair(mint);
+    // DexScreener now throws on 429/5xx so callers can distinguish "no pairs"
+    // from "API unavailable". For risk decisions we fall back to cached DB.
+    const pair = await dexScreenerClient.getBestPair(mint).catch((error) => {
+      logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: dexscreener unavailable, falling back to cached liquidity");
+      return null;
+    });
     if (pair?.liquidityUsd != null) return pair.liquidityUsd;
     return this.tokenLiquidity(mint);
   }
@@ -269,7 +275,10 @@ export class RiskEngine {
     if (overview?.createdAt) {
       return (Date.now() / 1000 - overview.createdAt) / 3600;
     }
-    const pair = await dexScreenerClient.getBestPair(mint);
+    const pair = await dexScreenerClient.getBestPair(mint).catch((error) => {
+      logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: dexscreener unavailable, no token-age estimate");
+      return null;
+    });
     if (pair?.pairCreatedAt) {
       return (Date.now() - pair.pairCreatedAt) / (1000 * 3600);
     }

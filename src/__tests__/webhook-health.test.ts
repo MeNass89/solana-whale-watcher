@@ -32,4 +32,22 @@ describe("checkWebhookHealth", () => {
     expect(mockUpdateWebhook).not.toHaveBeenCalled();
     expect(mockDiscordSend).toHaveBeenCalled();
   });
+
+  it("re-enables a returned-but-disabled webhook", async () => {
+    mockGetWebhook.mockResolvedValue({ webhookID: "wh1", webhookURL: "https://example.com/api/webhooks/helius", accountAddresses: ["addr1"], webhookType: "enhanced", enabled: false });
+    await checkWebhookHealth(helius, "wh1", "https://example.com/api/webhooks/helius", discord, wallets);
+    expect(mockUpdateWebhook).toHaveBeenCalledWith("wh1", expect.any(Array), "https://example.com/api/webhooks/helius");
+  });
+
+  it("re-enables a webhook with empty accountAddresses", async () => {
+    mockGetWebhook.mockResolvedValue({ webhookID: "wh1", webhookURL: "https://example.com/api/webhooks/helius", accountAddresses: [], webhookType: "enhanced" });
+    await checkWebhookHealth(helius, "wh1", "https://example.com/api/webhooks/helius", discord, wallets);
+    expect(mockUpdateWebhook).toHaveBeenCalledWith("wh1", expect.any(Array), "https://example.com/api/webhooks/helius");
+  });
+
+  it("does not heal when getWebhook throws (transient)", async () => {
+    mockGetWebhook.mockRejectedValue(new Error("503 Service Unavailable"));
+    await checkWebhookHealth(helius, "wh1", "https://example.com/api/webhooks/helius", discord, wallets);
+    expect(mockUpdateWebhook).not.toHaveBeenCalled();
+  });
 });

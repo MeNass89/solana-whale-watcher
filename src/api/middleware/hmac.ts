@@ -15,7 +15,16 @@ export async function verifyHeliusHmac(request: FastifyRequest, reply: FastifyRe
 
   const signature = firstHeader(request.headers["x-helius-signature"] ?? request.headers["x-signature"]);
   if (signature) {
-    const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody ?? JSON.stringify(request.body ?? {});
+    // HMAC must hash the *exact* request bytes. JSON.stringify on the parsed
+    // body normalizes whitespace/key order/quotes, so the digest would no
+    // longer match the sender's signature. If rawBody is missing it's a
+    // server-side misconfig (raw-body parser not registered) — fail loud.
+    const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody;
+    if (!rawBody) {
+      request.log.error("verifyHeliusHmac: rawBody not captured — content-type parser misconfigured");
+      await reply.code(500).send({ error: "Webhook auth misconfigured" });
+      return;
+    }
     const digest = crypto.createHmac("sha256", expected).update(rawBody).digest("hex");
     const normalized = signature.replace(/^sha256=/, "");
     if (safeEqual(digest, normalized)) return;

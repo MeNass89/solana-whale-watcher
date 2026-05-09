@@ -5,6 +5,14 @@ import { logger } from "../utils/logger.js";
 const BIRDEYE_BASE = "https://public-api.birdeye.so";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const BIRDEYE_RATE_LIMIT_DELAY_MS = 1000;
+const BIRDEYE_FETCH_TIMEOUT_MS = 10_000;
+
+export class BirdEyeRateLimitError extends Error {
+  constructor(public readonly retryAfterSeconds: number | null) {
+    super(`BirdEye rate limited (retry-after=${retryAfterSeconds ?? "unknown"})`);
+    this.name = "BirdEyeRateLimitError";
+  }
+}
 
 export interface HistoricalPrice {
   unixTime: number;
@@ -146,11 +154,18 @@ export class BirdEyeClient {
 
   private async request(path: string): Promise<any> {
     const response = await fetch(`${BIRDEYE_BASE}${path}`, {
+      // Hung connections used to block the scoring/risk path indefinitely.
+      signal: AbortSignal.timeout(BIRDEYE_FETCH_TIMEOUT_MS),
       headers: {
         "x-chain": "solana",
         "X-API-KEY": this.apiKey
       }
     });
+    if (response.status === 429) {
+      const header = response.headers.get("retry-after");
+      const retryAfter = header && Number.isFinite(Number(header)) ? Number(header) : null;
+      throw new BirdEyeRateLimitError(retryAfter);
+    }
     if (!response.ok) throw new Error(`BirdEye ${response.status}: ${await response.text()}`);
     const json = (await response.json()) as { success: boolean; data?: any };
     if (!json.success) throw new Error("BirdEye request unsuccessful");

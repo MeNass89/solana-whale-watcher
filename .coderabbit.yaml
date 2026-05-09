@@ -16,7 +16,6 @@ reviews:
     - "!dist/**"
     - "!**/*.lock"
     - "!**/*.log"
-    - "!data/**"
     - "!coverage/**"
   path_instructions:
     - path: "src/execution/**"
