@@ -148,7 +148,25 @@ async function main(): Promise<void> {
       let cached = solUsdCache.get(bucket);
       if (!cached) {
         const unixTime = trade.block_time;
-        const value = await birdEyeClient.getSolUsdAt(unixTime);
+        let value: number | null = null;
+        // Retry on 429 with retry-after; otherwise let other errors bubble.
+        // Mirrors the token-history retry block above so a single SOL/USD
+        // rate-limit doesn't poison the whole fallback batch.
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          try {
+            value = await birdEyeClient.getSolUsdAt(unixTime);
+            break;
+          } catch (error) {
+            if (error instanceof BirdEyeRateLimitError) {
+              const waitMs = (error.retryAfterSeconds ?? 30) * 1000;
+              console.log(`  SOL/USD rate-limited — backing off ${waitMs}ms`);
+              await sleep(waitMs);
+              continue;
+            }
+            throw error;
+          }
+        }
         cached = { unixTime, value };
         solUsdCache.set(bucket, cached);
         await sleep(RATE_LIMIT_DELAY_MS);

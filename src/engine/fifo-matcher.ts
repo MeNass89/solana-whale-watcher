@@ -46,11 +46,21 @@ interface Lot {
 const LOT_EMPTY_EPSILON = 1e-9;
 
 export function matchFifo(trades: RawTrade[]): FifoMatchResult {
+  // Defensive sort: callers are expected to pass time-ordered trades, but
+  // database query order isn't always guaranteed and a single out-of-order
+  // row corrupts FIFO matching. Stable tie-break on type so BUY before SELL
+  // at the same block_time (a same-block buy must enter the queue before
+  // its paired sell consumes it).
+  const sortedTrades = [...trades].sort((a, b) => {
+    if (a.block_time !== b.block_time) return a.block_time - b.block_time;
+    if (a.type === b.type) return 0;
+    return a.type === "BUY" ? -1 : 1;
+  });
   const lotsByPair = new Map<string, { wallet: string; mint: string; lots: Lot[] }>();
   const cycles: ClosedCycle[] = [];
   let unmatched_sells = 0;
 
-  for (const trade of trades) {
+  for (const trade of sortedTrades) {
     const key = `${trade.wallet}\0${trade.mint}`;
     let pair = lotsByPair.get(key);
     if (!pair) {

@@ -179,7 +179,7 @@ After all 4 tasks applied:
 4. `launchctl kickstart -k gui/501/com.nassim.whale-watcher` — restart service
 5. Verify PID changed via `launchctl list | grep whale-watcher`
 6. E2E sanity: `curl -s https://whale-watcher.tail-scale.ts.net/healthz` returns 200, no-auth POST to `/webhooks/helius` returns 401
-7. `git add -A` — verify staged files match expected list (5 files):
+7. `git add -A` — verify staged files match expected list (7 files):
    - `src/blockchain/helius-client.ts`
    - `src/engine/scorer.ts`
    - `src/jobs/wallet-scorer.ts`

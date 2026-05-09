@@ -1,5 +1,6 @@
 import type { AppDatabase } from "../storage/database.js";
 import { logger } from "../utils/logger.js";
+import { isSanePrice } from "./jupiter-client.js";
 
 interface AuditResult {
   total: number;
@@ -19,8 +20,8 @@ export function auditOpenPositions(db: AppDatabase): AuditResult {
     const violations: string[] = [];
 
     if (pos.tier === "WATCH") violations.push("WATCH tier position");
-    if (pos.entry_price_usd <= 0 || pos.entry_price_usd > 1e6 || !Number.isFinite(pos.entry_price_usd)) violations.push(`invalid entry price: ${pos.entry_price_usd}`);
-    if (pos.current_price_usd !== null && (!Number.isFinite(pos.current_price_usd) || pos.current_price_usd <= 0 || pos.current_price_usd > 1e6)) violations.push(`invalid current price: ${pos.current_price_usd}`);
+    if (!isSanePrice(pos.entry_price_usd)) violations.push(`invalid entry price: ${pos.entry_price_usd}`);
+    if (pos.current_price_usd !== null && !isSanePrice(pos.current_price_usd)) violations.push(`invalid current price: ${pos.current_price_usd}`);
     if (pos.amount_token <= 0 || pos.amount_token > 1e30 || !Number.isFinite(pos.amount_token)) violations.push(`invalid amount: ${pos.amount_token}`);
     if (pos.wallet_count !== null && pos.wallet_count < 2) violations.push(`convergence had only ${pos.wallet_count} wallet(s)`);
 

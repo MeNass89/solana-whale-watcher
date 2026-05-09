@@ -20,12 +20,22 @@ export function stopRecentTradesCleanup(): void {
 export function isRapidReversal(trade: ITradeEvent): boolean {
   const key = `${trade.walletAddress}:${trade.tokenMint}`;
   const previous = recentTrades.get(key);
-  recentTrades.set(key, { tradeType: trade.tradeType, blockTime: trade.blockTime });
+
+  // Only advance the cache for trades that are newer than the cached entry —
+  // an out-of-order webhook delivery (older blockTime arriving after a newer
+  // one) must not overwrite the newer entry, otherwise the next legitimate
+  // event compares against stale data.
+  if (!previous || trade.blockTime > previous.blockTime) {
+    recentTrades.set(key, { tradeType: trade.tradeType, blockTime: trade.blockTime });
+  }
 
   if (!previous) return false;
   const oppositeType = trade.tradeType === "BUY" ? "SELL" : "BUY";
   if (previous.tradeType !== oppositeType) return false;
-  return Math.abs(trade.blockTime - previous.blockTime) < RAPID_REVERSAL_WINDOW_SEC;
+  // Only count as reversal when the new trade is strictly later than the
+  // previous one within the window.
+  if (trade.blockTime <= previous.blockTime) return false;
+  return (trade.blockTime - previous.blockTime) < RAPID_REVERSAL_WINDOW_SEC;
 }
 
 interface EnhancedTokenTransfer {
