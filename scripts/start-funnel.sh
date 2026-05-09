@@ -11,9 +11,10 @@ TS_BIN="/opt/homebrew/bin/tailscale"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S'): $*" >> "$LOGFILE"; }
 
-echo "https://macbook-air-nassim.taila10165.ts.net" > "$URL_FILE"
+URL="https://macbook-air-nassim.taila10165.ts.net"
 
 if "$TS_BIN" funnel status 2>/dev/null | grep -q "127.0.0.1:3000"; then
+  printf "%s\n" "$URL" > "$URL_FILE"
   log "funnel already configured for port 3000 — entering monitor mode"
 else
   log "configuring tailscale funnel on port 3000"
@@ -22,6 +23,7 @@ else
     log "ERROR: failed to start funnel"
     exit 1
   fi
+  printf "%s\n" "$URL" > "$URL_FILE"
 fi
 
 while true; do

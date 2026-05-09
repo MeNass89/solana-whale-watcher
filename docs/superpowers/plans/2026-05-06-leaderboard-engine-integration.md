@@ -149,7 +149,7 @@ Use the existing test scaffolding pattern from `mev-filter.test.ts`. Mock the DB
 
 ## Risks
 
-- **Live DB migration on a running server**: the wallets table is hot. Use `IF NOT EXISTS` guards and run the migration in a single transaction. If the runtime has a migration runner, ensure it picks up file `004` automatically; otherwise apply manually via `sqlite3 data/whale-watcher.sqlite < src/storage/migrations/004_wallet_pnl_tracking.sql` while server holds an open connection (SQLite WAL mode allows this).
+- **Live DB migration on a running server**: the wallets table is hot. Use the migration runner (`runMigrations`) which applies `004_wallet_pnl_tracking.sql` via the PRAGMA-guarded helper `runWalletPnlTrackingMigration`. If applying manually, check `PRAGMA table_info(wallets)` for column existence first.
 - **`unknown` wallets at deploy time**: until the first leaderboard run, every wallet has `wallet_class = 'unknown'`. The convergence gate treats `unknown` as neutral (no boost, no reject) — verify this is what the code does, not a regression that blocks all convergences for 24 h.
 - **Cron failure leaves stale data**: if the daily refresh dies, `realized_sol_30d` becomes stale. Acceptable for v1 — fix in v2 with a "last_refreshed_at" check that ignores entries older than 48 h.
 

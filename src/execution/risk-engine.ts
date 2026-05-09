@@ -52,6 +52,7 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 const MIRROR_MIN_PCT = 0.3;
 const MIRROR_MAX_PCT = 5.0;
 const MIRROR_FALLBACK_PCT = 1.0;
+const MAX_REASONABLE_VOL_PCT = 300;
 
 export class RiskEngine {
   constructor(private db: AppDatabase | null = null) {}
@@ -81,9 +82,18 @@ export class RiskEngine {
       : liquidityUsd < TVL_MEDIUM_BRACKET_USD ? TVL_MEDIUM_CAP_PCT
       : limits.cap;
 
-    const mirrorPct = await this.computeMirrorSizePct(trades, portfolioValueUsd);
     const volatility = this.numberConfig(`token:${convergence.token_mint}:realized_vol_24h_pct`);
-    const volAdj = volatility && volatility > 0 ? Math.min(1, 50 / volatility) : 1;
+    // Hard-fail when volatility is unknown or outsized: skip the trade rather
+    // than apply MIRROR_MIN_PCT to an opaque-risk position.
+    if (volatility === null || volatility <= 0 || volatility > MAX_REASONABLE_VOL_PCT) {
+      logger.warn(
+        { mint: convergence.token_mint, volatility },
+        "risk-engine: volatility unknown or outsized; refusing entry"
+      );
+      return { allowed: false, reason: "volatility unknown or outsized", phase, portfolioValueUsd };
+    }
+    const mirrorPct = await this.computeMirrorSizePct(trades, portfolioValueUsd);
+    const volAdj = Math.min(1, 50 / volatility);
     const drawdownHalve = this.stringConfig("drawdown_halve_sizes") === "true" ? 0.5 : 1;
 
     const floorApplied = Math.max(MIRROR_MIN_PCT, mirrorPct * volAdj * drawdownHalve);
@@ -149,7 +159,16 @@ export class RiskEngine {
     // True median: average the two middle elements for even-length samples.
     const mid = Math.floor(solAmounts.length / 2);
     const median = solAmounts.length % 2 === 0 ? (solAmounts[mid - 1] + solAmounts[mid]) / 2 : solAmounts[mid];
-    const solPriceUsd = await jupiterClient.getPriceUsd(SOL_MINT).catch(() => null);
+    let solPriceUsd: number | null;
+    try {
+      solPriceUsd = await jupiterClient.getPriceUsd(SOL_MINT);
+    } catch (error) {
+      logger.warn(
+        { err: error instanceof Error ? error : new Error(String(error)), trades: trades.length, portfolioValueUsd },
+        "risk-engine: SOL/USD pricing failed for mirror sizing"
+      );
+      throw error;
+    }
     if (!solPriceUsd || solPriceUsd <= 0) return MIRROR_FALLBACK_PCT;
     const targetUsd = median * solPriceUsd;
     const targetPct = (targetUsd / portfolioValueUsd) * 100;

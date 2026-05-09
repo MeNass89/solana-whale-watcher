@@ -96,7 +96,9 @@ async function main(): Promise<void> {
   };
   // Run once at startup so freshly-deployed instances have wallet_class /
   // realized_sol_30d immediately rather than waiting for the next 06:00 tick.
-  setTimeout(leaderboardJob, 90_000);
+  // Use the guarded path here too so a startup-triggered run can't overlap
+  // with the 06:00 periodic if the timer happens to fire near that window.
+  setTimeout(leaderboardJobGuarded, 90_000);
   setInterval(() => {
     const now = new Date();
     if (now.getHours() === 6 && now.getMinutes() === 0) leaderboardJobGuarded();

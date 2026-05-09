@@ -189,12 +189,16 @@ export class TradeExecutor {
         inputMint: current.token_mint,
         outputMint: USDC_MINT,
         amountLamports: (() => {
-          // Scale to base units before rounding so fractional token exits keep
-          // their value through the conversion.
-          const scale = 10 ** decimals;
-          const baseUnitsFloat = sellAmountToken * scale;
-          if (!Number.isFinite(baseUnitsFloat) || baseUnitsFloat < 1) return 1n;
-          return BigInt(Math.floor(baseUnitsFloat).toString());
+          // Split integer/fractional parts so high-decimal tokens with large
+          // balances don't lose integer precision via float scaling.
+          if (!Number.isFinite(sellAmountToken) || sellAmountToken <= 0) return 1n;
+          const scale = 10n ** BigInt(decimals);
+          const flooredTokenAmount = Math.floor(sellAmountToken);
+          const intPart = BigInt(flooredTokenAmount);
+          const fracPart = sellAmountToken - flooredTokenAmount;
+          const fracBaseUnits = BigInt(Math.floor(fracPart * Number(scale)));
+          const total = intPart * scale + fracBaseUnits;
+          return total < 1n ? 1n : total;
         })(),
         slippageBps,
         isExitSwap: true,

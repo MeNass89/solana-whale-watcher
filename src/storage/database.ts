@@ -37,8 +37,6 @@ export function runMigrations(db: AppDatabase): void {
 
 function runWalletPnlTrackingMigration(db: AppDatabase): void {
   const tx = db.transaction(() => {
-    // Probe schema inside the transaction so two concurrent startups can't
-    // both observe the pre-migration state and race on duplicate ALTER TABLE.
     const columns = new Set(
       (db.prepare("PRAGMA table_info(wallets)").all() as Array<{ name: string }>).map((column) => column.name)
     );
@@ -55,5 +53,7 @@ function runWalletPnlTrackingMigration(db: AppDatabase): void {
     db.exec("CREATE INDEX IF NOT EXISTS idx_wallets_class ON wallets(wallet_class)");
     db.exec("CREATE INDEX IF NOT EXISTS idx_wallets_realized_sol ON wallets(realized_sol_30d DESC)");
   });
-  tx();
+  // Acquire RESERVED lock up-front so two concurrent startups can't both
+  // observe the pre-migration schema.
+  tx.immediate();
 }

@@ -111,10 +111,12 @@ export function buildWalletMetrics(activeWallets: string[], trades: RawTrade[]):
 
   const matched = matchFifo(trades);
   const holdTimesByWallet = new Map<string, number[]>();
+  const partialKeys = new Set<string>();
   for (const cycle of matched.cycles) {
     const wallet = metrics.get(cycle.wallet);
     if (!wallet) continue;
 
+    partialKeys.add(`${cycle.wallet}\0${cycle.mint}`);
     wallet.n_closed += 1;
     wallet.realized_sol += cycle.pnl_sol;
     wallet.realized_usd += cycle.pnl_usd;
@@ -130,6 +132,9 @@ export function buildWalletMetrics(activeWallets: string[], trades: RawTrade[]):
     if (!wallet) continue;
     wallet.n_open += 1;
     wallet.locked_sol += position.locked_sol;
+    if (partialKeys.has(`${position.wallet}\0${position.mint}`)) {
+      wallet.n_partial += 1;
+    }
   }
 
   for (const wallet of metrics.values()) {

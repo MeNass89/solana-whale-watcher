@@ -129,7 +129,14 @@ export class PositionManager {
           tier: input.tier
         });
     } catch (error) {
-      if (isSqliteConstraint(error)) {
+      // Only the UNIQUE partial index collision (concurrent open of same
+      // mint) is benign. Other constraint failures (NOT NULL, CHECK, FK)
+      // indicate real bugs and must surface.
+      const code = (error as NodeJS.ErrnoException & { code?: string })?.code;
+      const msg = error instanceof Error ? error.message : "";
+      const isUniqueViolation =
+        code === "SQLITE_CONSTRAINT_UNIQUE" || /UNIQUE constraint failed/i.test(msg);
+      if (isUniqueViolation) {
         const existing = this.findOpenByMint(input.tokenMint);
         if (existing) {
           logger.info({ mint: input.tokenMint, positionId: existing.id }, "open position skipped; active position already exists for this token");
@@ -423,17 +430,6 @@ function timeStopSeconds(tier: AlertTier): number {
   if (tier === "WATCH") return 24 * 60 * 60;
   if (tier === "NOTABLE") return 72 * 60 * 60;
   return 7 * 24 * 60 * 60;
-}
-
-function isSqliteConstraint(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof (error as { code?: unknown }).code === "string" &&
-    ((error as { code: string }).code === "SQLITE_CONSTRAINT" ||
-      (error as { code: string }).code.startsWith("SQLITE_CONSTRAINT_"))
-  );
 }
 
 export const positionManager = new PositionManager();
