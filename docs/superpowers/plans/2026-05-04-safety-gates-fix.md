@@ -172,10 +172,8 @@ In the convergence detection method, after tier assignment (around line 54-63), 
 import { getMinWalletsForTier } from "../config/thresholds.js";
 
 // After tier is assigned:
-if (uniqueWallets.size < getMinWalletsForTier(tier)) {
-  if (tier === "CRITICAL") tier = "NOTABLE";
-  else if (tier === "NOTABLE") tier = "WATCH";
-  // WATCH stays WATCH — won't be executed anyway
+while (uniqueWallets.size < getMinWalletsForTier(tier) && tier !== "WATCH") {
+  tier = tier === "CRITICAL" ? "NOTABLE" : "WATCH";
 }
 ```
 

@@ -36,6 +36,10 @@ export interface WalletMetricsResult {
   unmatched_sells: number;
 }
 
+export interface RefreshLeaderboardOptions {
+  applyPrune?: boolean;
+}
+
 function truncWallet(wallet: string): string {
   return `${wallet.slice(0, 10)}...${wallet.slice(-4)}`;
 }
@@ -158,8 +162,8 @@ export function buildWalletMetrics(activeWallets: string[], trades: RawTrade[]):
   return { metrics: [...metrics.values()], unmatched_sells: matched.unmatched_sells };
 }
 
-function main(): void {
-  const applyPrune = process.argv.includes("--apply-prune");
+export function refreshLeaderboard(options: RefreshLeaderboardOptions = {}): void {
+  const applyPrune = options.applyPrune ?? false;
   const generatedAt = Math.floor(Date.now() / 1000);
   const cutoff = generatedAt - WINDOW_SEC;
 
@@ -277,6 +281,11 @@ function main(): void {
   }
 
   db.close();
+}
+
+function main(): void {
+  const applyPrune = process.argv.includes("--apply-prune");
+  refreshLeaderboard({ applyPrune });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

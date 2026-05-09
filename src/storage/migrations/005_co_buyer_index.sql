@@ -1,6 +1,5 @@
--- Composite index for the co-buyer scanner SELECT DISTINCT wallet_address
--- WHERE token_mint = ? AND trade_type = 'BUY' AND block_time BETWEEN ? AND ?.
--- Without this, the scan falls back to a per-token-mint range scan that
--- re-reads every trade row in the window.
-CREATE INDEX IF NOT EXISTS idx_trades_token_type_time
-  ON trades(token_mint, trade_type, block_time);
+-- Superseded by 006_co_buyer_index_covering.sql: the covering variant
+-- idx_trades_token_type_wallet_time replaces this index and serves the
+-- co-buyer scanner directly from the index. Keeping this file as a no-op
+-- comment preserves the migration ordering for any environment that already
+-- ran the original CREATE; migration 006 issues DROP IF EXISTS to clean up.

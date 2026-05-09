@@ -104,13 +104,21 @@ export class HeliusClient implements IChainMonitor {
         // scorer can log/retry; treating 401/403 as pagination end truncates
         // recent activity when the key expires or is unauthorized.
         if (response.status === 429 || response.status === 401 || response.status === 403 || response.status >= 500) {
-          throw new HeliusRequestError(response.status, `Helius getWalletTransactions failed (${response.status})`);
+          throw new HeliusRequestError(
+            response.status,
+            `Helius getWalletTransactions failed (${response.status})`,
+            parseRetryAfter(response.headers.get("retry-after"))
+          );
         }
         if (response.status === 404) {
           logger.warn({ address, status: response.status, beforeSignature }, "getWalletTransactions: wallet not found, stopping pagination");
           break;
         }
-        throw new HeliusRequestError(response.status, `Helius getWalletTransactions failed (${response.status})`);
+        throw new HeliusRequestError(
+          response.status,
+          `Helius getWalletTransactions failed (${response.status})`,
+          parseRetryAfter(response.headers.get("retry-after"))
+        );
       }
       const batch = (await response.json()) as HeliusTransaction[];
       if (batch.length === 0) break;
@@ -157,7 +165,11 @@ export class HeliusClient implements IChainMonitor {
     });
     if (!response.ok) {
       const body = await response.text();
-      throw new HeliusRequestError(response.status, `Helius request failed (${response.status}): ${body}`);
+      throw new HeliusRequestError(
+        response.status,
+        `Helius request failed (${response.status}): ${body}`,
+        parseRetryAfter(response.headers.get("retry-after"))
+      );
     }
     return (await response.json()) as T;
   }

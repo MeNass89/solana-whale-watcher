@@ -14,6 +14,13 @@ export class BirdEyeRateLimitError extends Error {
   }
 }
 
+export class BirdEyeUnavailableError extends Error {
+  constructor(public readonly status: number | null, public readonly cause: unknown) {
+    super(`BirdEye unavailable${status != null ? ` (${status})` : ""}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "BirdEyeUnavailableError";
+  }
+}
+
 export interface HistoricalPrice {
   unixTime: number;
   value: number;
@@ -96,8 +103,9 @@ export class BirdEyeClient {
       const data = await this.request(`/defi/historical_price_unix?${params.toString()}`);
       return Number.isFinite(data?.value) ? data.value : null;
     } catch (error) {
-      // Surface 429s so callers can back off; everything else still degrades to null.
-      if (error instanceof BirdEyeRateLimitError) throw error;
+      // Surface provider failures so callers can back off instead of treating
+      // them as a no-data response.
+      if (error instanceof BirdEyeRateLimitError || error instanceof BirdEyeUnavailableError) throw error;
       logger.warn({ unixTime, err: error instanceof Error ? error : new Error(String(error)) }, "birdeye: getSolUsdAt failed");
       return null;
     }
@@ -120,7 +128,7 @@ export class BirdEyeClient {
         createdAt: data.createdAt ? Math.floor(data.createdAt / 1000) : null
       };
     } catch (error) {
-      if (error instanceof BirdEyeRateLimitError) throw error;
+      if (error instanceof BirdEyeRateLimitError || error instanceof BirdEyeUnavailableError) throw error;
       logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "birdeye: getTokenOverview failed");
       return null;
     }
@@ -146,7 +154,7 @@ export class BirdEyeClient {
         totalSellAmount: totalSell
       };
     } catch (error) {
-      if (error instanceof BirdEyeRateLimitError) throw error;
+      if (error instanceof BirdEyeRateLimitError || error instanceof BirdEyeUnavailableError) throw error;
       logger.warn(
         { walletAddress: walletAddress.substring(0, 12), err: error instanceof Error ? error : new Error(String(error)) },
         "birdeye: getWalletPnl failed"
@@ -156,22 +164,39 @@ export class BirdEyeClient {
   }
 
   private async request(path: string): Promise<any> {
-    const response = await fetch(`${BIRDEYE_BASE}${path}`, {
-      // Hung connections used to block the scoring/risk path indefinitely.
-      signal: AbortSignal.timeout(BIRDEYE_FETCH_TIMEOUT_MS),
-      headers: {
-        "x-chain": "solana",
-        "X-API-KEY": this.apiKey
-      }
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${BIRDEYE_BASE}${path}`, {
+        // Hung connections used to block the scoring/risk path indefinitely.
+        signal: AbortSignal.timeout(BIRDEYE_FETCH_TIMEOUT_MS),
+        headers: {
+          "x-chain": "solana",
+          "X-API-KEY": this.apiKey
+        }
+      });
+    } catch (error) {
+      throw new BirdEyeUnavailableError(null, error);
+    }
     if (response.status === 429) {
       const header = response.headers.get("retry-after");
       const retryAfter = header && Number.isFinite(Number(header)) ? Number(header) : null;
       throw new BirdEyeRateLimitError(retryAfter);
     }
-    if (!response.ok) throw new Error(`BirdEye ${response.status}: ${await response.text()}`);
-    const json = (await response.json()) as { success: boolean; data?: any };
-    if (!json.success) throw new Error("BirdEye request unsuccessful");
+    if (response.status === 401 || response.status === 403 || response.status >= 500) {
+      throw new BirdEyeUnavailableError(response.status, new Error(await response.text()));
+    }
+    if (!response.ok) {
+      throw new BirdEyeUnavailableError(response.status, new Error(await response.text()));
+    }
+    let json: { success: boolean; data?: any };
+    try {
+      json = (await response.json()) as { success: boolean; data?: any };
+    } catch (error) {
+      throw new BirdEyeUnavailableError(response.status, error);
+    }
+    if (!json.success) {
+      throw new BirdEyeUnavailableError(response.status, new Error("BirdEye request unsuccessful"));
+    }
     return json.data ?? null;
   }
 }

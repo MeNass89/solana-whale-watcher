@@ -39,23 +39,22 @@ function nearestCandle(prices: HistoricalPrice[], unixTime: number): HistoricalP
   if (prices.length === 0) return null;
 
   let lo = 0;
-  let hi = prices.length - 1;
+  let hi = prices.length;
   while (lo < hi) {
+    // Find the smallest index whose unixTime > target so prices[lo - 1] is the
+    // last candle at-or-before the trade.
     const mid = Math.floor((lo + hi) / 2);
-    if (prices[mid].unixTime < unixTime) lo = mid + 1;
+    if (prices[mid].unixTime <= unixTime) lo = mid + 1;
     else hi = mid;
   }
 
-  const candidates = [prices[lo], prices[lo - 1]].filter(Boolean) as HistoricalPrice[];
-  let best: HistoricalPrice | null = null;
-  for (const candidate of candidates) {
-    if (!best || Math.abs(candidate.unixTime - unixTime) < Math.abs(best.unixTime - unixTime)) {
-      best = candidate;
-    }
-  }
-
-  if (!best || Math.abs(best.unixTime - unixTime) > CANDLE_TOLERANCE_SEC) return null;
-  return best.value > 0 ? best : null;
+  // After the loop, prices[lo] is the first candle strictly after unixTime
+  // (or the boundary). The candle at prices[lo - 1] (if any) is the latest
+  // candle at-or-before unixTime — the only safe choice for past-only pricing.
+  const candidate = lo > 0 ? prices[lo - 1] : null;
+  if (!candidate) return null;
+  if (unixTime - candidate.unixTime > CANDLE_TOLERANCE_SEC) return null;
+  return candidate.value > 0 ? candidate : null;
 }
 
 async function main(): Promise<void> {

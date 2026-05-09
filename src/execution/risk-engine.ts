@@ -1,5 +1,5 @@
 import { config } from "../config/index.js";
-import { BirdEyeRateLimitError, birdEyeClient } from "../blockchain/birdeye-client.js";
+import { BirdEyeRateLimitError, BirdEyeUnavailableError, birdEyeClient } from "../blockchain/birdeye-client.js";
 import {
   DexScreenerRateLimitError,
   DexScreenerServerError,
@@ -62,6 +62,7 @@ const MAX_REASONABLE_VOL_PCT = 300;
 function isTransientProviderError(error: unknown): boolean {
   return (
     error instanceof BirdEyeRateLimitError ||
+    error instanceof BirdEyeUnavailableError ||
     error instanceof DexScreenerRateLimitError ||
     error instanceof DexScreenerServerError ||
     error instanceof DexScreenerTransientError
