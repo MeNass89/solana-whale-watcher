@@ -59,14 +59,17 @@ function computeFreshWalletFraction(buys: TradeRow[], walletModel: WalletModel):
 function computeCoOccurrence(buys: TradeRow[], db: AppDatabase): number {
   const wallets = [...new Set(buys.map((b) => b.wallet_address))];
   if (wallets.length < 3) return 0;
+  const maxBuyTime = Math.max(...buys.map((b) => b.block_time));
 
   const placeholders = wallets.map(() => "?").join(",");
   const rows = db.prepare(`
     SELECT ct.convergence_id, t.wallet_address
     FROM convergence_trades ct
     JOIN trades t ON t.id = ct.trade_id
+    JOIN convergences c ON c.id = ct.convergence_id
     WHERE t.wallet_address IN (${placeholders})
-  `).all(...wallets) as Array<{ convergence_id: number; wallet_address: string }>;
+      AND c.last_trade_at <= ?
+  `).all(...wallets, maxBuyTime) as Array<{ convergence_id: number; wallet_address: string }>;
 
   const byConv = new Map<number, Set<string>>();
   for (const row of rows) {

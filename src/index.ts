@@ -84,12 +84,22 @@ async function main(): Promise<void> {
   const leaderboardJob = () => runLeaderboardRefresh().catch((err) => {
     logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "leaderboard-refresh: job failed");
   });
+  let leaderboardRunning = false;
+  const leaderboardJobGuarded = async () => {
+    if (leaderboardRunning) return;
+    leaderboardRunning = true;
+    try {
+      await leaderboardJob();
+    } finally {
+      leaderboardRunning = false;
+    }
+  };
   // Run once at startup so freshly-deployed instances have wallet_class /
   // realized_sol_30d immediately rather than waiting for the next 06:00 tick.
   setTimeout(leaderboardJob, 90_000);
   setInterval(() => {
     const now = new Date();
-    if (now.getHours() === 6 && now.getMinutes() === 0) leaderboardJob();
+    if (now.getHours() === 6 && now.getMinutes() === 0) leaderboardJobGuarded();
   }, 60 * 1000);
 
   // Mutex prevents overlapping runs when the 15-min interval lands while a

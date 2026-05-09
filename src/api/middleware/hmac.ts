@@ -20,7 +20,7 @@ export async function verifyHeliusHmac(request: FastifyRequest, reply: FastifyRe
     // longer match the sender's signature. If rawBody is missing it's a
     // server-side misconfig (raw-body parser not registered) — fail loud.
     const rawBody = (request as FastifyRequest & { rawBody?: string }).rawBody;
-    if (!rawBody) {
+    if (rawBody === undefined) {
       request.log.error("verifyHeliusHmac: rawBody not captured — content-type parser misconfigured");
       await reply.code(500).send({ error: "Webhook auth misconfigured" });
       return;

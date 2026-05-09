@@ -115,7 +115,8 @@ export class JupiterClient {
         return null;
       }
       return price;
-    } catch {
+    } catch (error) {
+      logger.warn({ mint, err: error instanceof Error ? error.message : String(error) }, "getPriceUsd: request failed");
       return null;
     }
   }

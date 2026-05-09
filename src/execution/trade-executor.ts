@@ -111,8 +111,14 @@ export class TradeExecutor {
         slippageBps,
         tier: convergence.tier
       });
+      // Mirror the SELL phantom-exit guard: a non-positive outputAmount means
+      // the swap didn't actually deliver. Recording a fill anyway opens a NaN
+      // position, debits paper balance, and trips dedup on later signals.
+      if (!Number.isFinite(result.outputAmount) || result.outputAmount <= 0) {
+        throw new Error(`entry swap returned non-positive outputAmount: ${result.outputAmount}`);
+      }
       const amountToken = result.outputAmount;
-      const actualEntryPrice = amountToken > 0 ? risk.sizeUsd / amountToken : entryPrice;
+      const actualEntryPrice = risk.sizeUsd / amountToken;
       this.fillExecution(executionId, {
         direction: "BUY",
         amountToken,
@@ -174,11 +180,17 @@ export class TradeExecutor {
     });
 
     try {
-      const decimals = this.tokenDecimals(current.token_mint);
+      const decimals = Math.max(0, Math.trunc(this.tokenDecimals(current.token_mint)));
       const result = await this.swaps.executeSwap({
         inputMint: current.token_mint,
         outputMint: USDC_MINT,
-        amountLamports: BigInt(Math.max(1, Math.round(sellAmountToken * 10 ** decimals))),
+        // Multiply in BigInt space — for high-decimal tokens with large balances,
+        // sellAmountToken * 10**decimals can exceed Number.MAX_SAFE_INTEGER (2^53)
+        // and silently truncate, corrupting exit P&L.
+        amountLamports: (() => {
+          const tokenInteger = BigInt(Math.max(1, Math.round(sellAmountToken)));
+          return tokenInteger * (10n ** BigInt(decimals));
+        })(),
         slippageBps,
         isExitSwap: true,
         panicExit,

@@ -1,4 +1,5 @@
 import { config } from "../config/index.js";
+import { logger } from "../utils/logger.js";
 import type { IChainMonitor } from "./types.js";
 
 const HELIUS_BASE_URL = "https://api.helius.xyz";
@@ -100,6 +101,7 @@ export class HeliusClient implements IChainMonitor {
         if (response.status === 429 || response.status >= 500) {
           throw new HeliusRequestError(response.status, `Helius getWalletTransactions failed (${response.status})`);
         }
+        logger.warn({ address, status: response.status, beforeSignature }, "getWalletTransactions: non-OK 4xx, stopping pagination");
         break;
       }
       const batch = (await response.json()) as HeliusTransaction[];

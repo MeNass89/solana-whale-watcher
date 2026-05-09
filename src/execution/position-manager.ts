@@ -102,30 +102,42 @@ export class PositionManager {
 
   openPosition(input: OpenPositionInput): PositionRow {
     const stopLossPrice = input.entryPriceUsd * 0.85;
-    const result = this.requireDb()
-      .prepare(
-        `INSERT INTO positions
-          (token_mint, token_symbol, entry_execution_id, convergence_id, amount_token, entry_price_usd,
-           current_price_usd, stop_loss_price, take_profit_prices, trailing_stop_pct, peak_price_usd,
-           time_stop_at, tier, status)
-         VALUES
-          (@tokenMint, @tokenSymbol, @entryExecutionId, @convergenceId, @amountToken, @entryPriceUsd,
-           @entryPriceUsd, @stopLossPrice, @takeProfitPrices, @trailingStopPct, @entryPriceUsd,
-           @timeStopAt, @tier, 'OPEN')`
-      )
-      .run({
-        tokenMint: input.tokenMint,
-        tokenSymbol: input.tokenSymbol ?? null,
-        entryExecutionId: input.entryExecutionId,
-        convergenceId: input.convergenceId,
-        amountToken: input.amountToken,
-        entryPriceUsd: input.entryPriceUsd,
-        stopLossPrice,
-        takeProfitPrices: JSON.stringify(takeProfitLadder()),
-        trailingStopPct: TRAIL_DEFAULT_PCT,
-        timeStopAt: unixNow() + timeStopSeconds(input.tier),
-        tier: input.tier
-      });
+    let result: { lastInsertRowid: number | bigint };
+    try {
+      result = this.requireDb()
+        .prepare(
+          `INSERT INTO positions
+            (token_mint, token_symbol, entry_execution_id, convergence_id, amount_token, entry_price_usd,
+             current_price_usd, stop_loss_price, take_profit_prices, trailing_stop_pct, peak_price_usd,
+             time_stop_at, tier, status)
+           VALUES
+            (@tokenMint, @tokenSymbol, @entryExecutionId, @convergenceId, @amountToken, @entryPriceUsd,
+             @entryPriceUsd, @stopLossPrice, @takeProfitPrices, @trailingStopPct, @entryPriceUsd,
+             @timeStopAt, @tier, 'OPEN')`
+        )
+        .run({
+          tokenMint: input.tokenMint,
+          tokenSymbol: input.tokenSymbol ?? null,
+          entryExecutionId: input.entryExecutionId,
+          convergenceId: input.convergenceId,
+          amountToken: input.amountToken,
+          entryPriceUsd: input.entryPriceUsd,
+          stopLossPrice,
+          takeProfitPrices: JSON.stringify(takeProfitLadder()),
+          trailingStopPct: TRAIL_DEFAULT_PCT,
+          timeStopAt: unixNow() + timeStopSeconds(input.tier),
+          tier: input.tier
+        });
+    } catch (error) {
+      if (isSqliteConstraint(error)) {
+        const existing = this.findOpenByMint(input.tokenMint);
+        if (existing) {
+          logger.info({ mint: input.tokenMint, positionId: existing.id }, "open position skipped; active position already exists for this token");
+          return existing;
+        }
+      }
+      throw error;
+    }
 
     return this.findById(Number(result.lastInsertRowid))!;
   }
@@ -196,6 +208,14 @@ export class PositionManager {
 
   findById(id: number): PositionRow | null {
     return (this.requireDb().prepare("SELECT * FROM positions WHERE id = ?").get(id) as PositionRow | undefined) ?? null;
+  }
+
+  findOpenByMint(tokenMint: string): PositionRow | null {
+    return (
+      this.requireDb()
+        .prepare("SELECT * FROM positions WHERE token_mint = ? AND status IN ('OPEN','PARTIAL') ORDER BY opened_at ASC LIMIT 1")
+        .get(tokenMint) as PositionRow | undefined
+    ) ?? null;
   }
 
   markExit(position: PositionRow, remainingAmount: number, priceUsd: number, reason: string): void {
@@ -403,6 +423,17 @@ function timeStopSeconds(tier: AlertTier): number {
   if (tier === "WATCH") return 24 * 60 * 60;
   if (tier === "NOTABLE") return 72 * 60 * 60;
   return 7 * 24 * 60 * 60;
+}
+
+function isSqliteConstraint(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string" &&
+    ((error as { code: string }).code === "SQLITE_CONSTRAINT" ||
+      (error as { code: string }).code.startsWith("SQLITE_CONSTRAINT_"))
+  );
 }
 
 export const positionManager = new PositionManager();

@@ -53,7 +53,7 @@ export class ConvergenceEngine {
     score = applyManipulationPenalty(score, signals);
 
     let tier = pickTier(score, uniqueWallets.size);
-    tier = validateTierWindow(tier, score, recentBuys, windowSeconds);
+    tier = validateTierWindow(tier, score, recentBuys, windowSeconds, threshold);
 
     const quality = this.wallets.qualityFor([...uniqueWallets]);
     const resolvedQuality = [...uniqueWallets].map((addr) => quality.get(addr));
@@ -85,7 +85,7 @@ export class ConvergenceEngine {
       const boosted = tier === "WATCH" ? "NOTABLE" : tier === "NOTABLE" ? "CRITICAL" : tier;
       // Boost is intentionally not gated on the penalized score; alpha presence
       // is the trust signal. Revalidate the boosted tier's narrow-window floor.
-      tier = validateTierWindow(boosted, scoreForTier(boosted), recentBuys, windowSeconds);
+      tier = validateTierWindow(boosted, scoreForTier(boosted), recentBuys, windowSeconds, threshold);
       logger.info({ token: newTrade.tokenMint, avgPnl, hasTopAlpha: true, tier }, "tier boosted by alpha trigger (re-validated against narrow-window floor)");
     }
 
@@ -156,7 +156,8 @@ function validateTierWindow(
   candidate: ConvergenceTier,
   score: number,
   recentBuys: TradeRow[],
-  windowSeconds: number
+  windowSeconds: number,
+  threshold: number
 ): ConvergenceTier {
   let tier = candidate;
   while (true) {
@@ -171,7 +172,7 @@ function validateTierWindow(
 
     const tierSince = Math.floor(Date.now() / 1000) - tierWindowSeconds;
     const tierWallets = new Set(recentBuys.filter((t) => t.block_time >= tierSince).map((t) => t.wallet_address));
-    if (tierWallets.size >= getMinWalletsForTier(tier)) return tier;
+    if (tierWallets.size >= Math.max(threshold, getMinWalletsForTier(tier))) return tier;
 
     if (tier === "CRITICAL") { tier = "NOTABLE"; continue; }
     if (tier === "NOTABLE") { tier = "WATCH"; continue; }

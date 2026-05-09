@@ -36,11 +36,13 @@ export function runMigrations(db: AppDatabase): void {
 }
 
 function runWalletPnlTrackingMigration(db: AppDatabase): void {
-  const columns = new Set(
-    (db.prepare("PRAGMA table_info(wallets)").all() as Array<{ name: string }>).map((column) => column.name)
-  );
-
   const tx = db.transaction(() => {
+    // Probe schema inside the transaction so two concurrent startups can't
+    // both observe the pre-migration state and race on duplicate ALTER TABLE.
+    const columns = new Set(
+      (db.prepare("PRAGMA table_info(wallets)").all() as Array<{ name: string }>).map((column) => column.name)
+    );
+
     if (!columns.has("realized_sol_30d")) {
       db.exec("ALTER TABLE wallets ADD COLUMN realized_sol_30d REAL DEFAULT 0");
     }

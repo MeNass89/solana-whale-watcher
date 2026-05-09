@@ -86,8 +86,8 @@ export class RiskEngine {
     const volAdj = volatility && volatility > 0 ? Math.min(1, 50 / volatility) : 1;
     const drawdownHalve = this.stringConfig("drawdown_halve_sizes") === "true" ? 0.5 : 1;
 
-    let adjustedSizePct = Math.min(tvlBracketCapPct, mirrorPct * volAdj * drawdownHalve);
-    adjustedSizePct = Math.max(MIRROR_MIN_PCT, adjustedSizePct);
+    const floorApplied = Math.max(MIRROR_MIN_PCT, mirrorPct * volAdj * drawdownHalve);
+    const adjustedSizePct = Math.min(tvlBracketCapPct, floorApplied);
 
     const sizeUsd = (portfolioValueUsd * adjustedSizePct) / 100;
     if ((sizeUsd / liquidityUsd) * 100 > MAX_POSITION_POOL_TVL_PCT) {

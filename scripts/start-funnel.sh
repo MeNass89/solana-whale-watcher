@@ -18,6 +18,7 @@ if "$TS_BIN" funnel status 2>/dev/null | grep -q "127.0.0.1:3000"; then
 else
   log "configuring tailscale funnel on port 3000"
   if ! "$TS_BIN" funnel --bg 3000 >> "$LOGFILE" 2>&1; then
+    : > "$URL_FILE"
     log "ERROR: failed to start funnel"
     exit 1
   fi
@@ -26,6 +27,7 @@ fi
 while true; do
   sleep 300
   if ! "$TS_BIN" funnel status 2>/dev/null | grep -q "127.0.0.1:3000"; then
+    : > "$URL_FILE"
     log "WARN: funnel dropped — exiting to trigger launchd restart"
     exit 1
   fi

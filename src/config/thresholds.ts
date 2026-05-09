@@ -9,6 +9,11 @@ export function getMinWalletsForTier(tier: AlertTier): number {
     case "CRITICAL": return 3;
     case "NOTABLE": return 2;
     case "WATCH": return 1;
-    default: return 2;
+    default: {
+      // Forces a compile error if a new AlertTier variant is added without
+      // updating this switch. Runtime fallthrough throws to surface the bug.
+      const _exhaustive: never = tier;
+      throw new Error(`unhandled AlertTier: ${_exhaustive as string}`);
+    }
   }
 }
