@@ -95,7 +95,7 @@ export class TradeExecutor {
       return;
     }
 
-    const liquidityUsd = await this.risk.tokenLiquidityLive(convergence.token_mint);
+    const liquidityUsd = risk.liquidityUsd ?? null;
     const slippageBps = this.swaps.slippageBpsForLiquidity(liquidityUsd);
     if (slippageBps === null) {
       logger.info({ mint: convergence.token_mint, liquidityUsd }, "execution skipped; liquidity below minimum");

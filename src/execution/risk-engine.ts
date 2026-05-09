@@ -20,6 +20,7 @@ export interface RiskCheck {
   phase?: RiskPhase;
   portfolioValueUsd?: number;
   sizeUsd?: number;
+  liquidityUsd?: number;
 }
 
 type RiskPhase = "cold_start" | "validated" | "mature";
@@ -114,8 +115,14 @@ export class RiskEngine {
     const floorApplied = Math.max(MIRROR_MIN_PCT, mirrorPct * volAdj * drawdownHalve);
     const adjustedSizePct = Math.min(tvlBracketCapPct, floorApplied);
 
+    // Apply portfolio hard cap BEFORE downstream size-based gates so we evaluate
+    // the executable size, not an uncapped theoretical one.
     const sizeUsd = (portfolioValueUsd * adjustedSizePct) / 100;
-    if ((sizeUsd / liquidityUsd) * 100 > MAX_POSITION_POOL_TVL_PCT) {
+    const hardCapUsd = Math.min(portfolioValueUsd * MAX_POSITION_PORTFOLIO_PCT / 100, MAX_POSITION_USD);
+    const finalSizeUsd = Math.min(sizeUsd, hardCapUsd);
+    const finalSizePct = (finalSizeUsd / portfolioValueUsd) * 100;
+
+    if ((finalSizeUsd / liquidityUsd) * 100 > MAX_POSITION_POOL_TVL_PCT) {
       return { allowed: false, reason: "position exceeds 0.5% of pool TVL", phase, portfolioValueUsd };
     }
 
@@ -140,7 +147,7 @@ export class RiskEngine {
     if (openPositions >= limits.maxPositions) return { allowed: false, reason: "max open positions reached", phase, portfolioValueUsd };
 
     const exposurePct = this.openExposurePct(portfolioValueUsd);
-    if (exposurePct + adjustedSizePct > limits.maxExposure) {
+    if (exposurePct + finalSizePct > limits.maxExposure) {
       return { allowed: false, reason: "portfolio exposure limit exceeded", phase, portfolioValueUsd };
     }
 
@@ -149,7 +156,7 @@ export class RiskEngine {
       return { allowed: false, reason: "max per narrative reached", phase, portfolioValueUsd };
     }
 
-    if (this.portfolioHeatPct(portfolioValueUsd) + adjustedSizePct * 0.25 > PORTFOLIO_HEAT_CAP_PCT) {
+    if (this.portfolioHeatPct(portfolioValueUsd) + finalSizePct * 0.25 > PORTFOLIO_HEAT_CAP_PCT) {
       return { allowed: false, reason: "portfolio heat cap exceeded", phase, portfolioValueUsd };
     }
 
@@ -158,11 +165,7 @@ export class RiskEngine {
       return { allowed: false, reason: "SOL reserve below 5 SOL", phase, portfolioValueUsd };
     }
 
-    const hardCapUsd = Math.min(portfolioValueUsd * MAX_POSITION_PORTFOLIO_PCT / 100, MAX_POSITION_USD);
-    const finalSizeUsd = Math.min(sizeUsd, hardCapUsd);
-    const finalSizePct = (finalSizeUsd / portfolioValueUsd) * 100;
-
-    return { allowed: true, adjustedSizePct: finalSizePct, phase, portfolioValueUsd, sizeUsd: finalSizeUsd };
+    return { allowed: true, adjustedSizePct: finalSizePct, phase, portfolioValueUsd, sizeUsd: finalSizeUsd, liquidityUsd };
   }
 
   private async computeMirrorSizePct(trades: TradeRow[], portfolioValueUsd: number): Promise<number> {

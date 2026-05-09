@@ -59,8 +59,8 @@ export class WalletModel {
   upsert(input: { address: string; label?: string; source?: WalletSource; state?: WalletState; active?: boolean }): void {
     this.db
       .prepare(
-        `INSERT INTO wallets (address, label, source, state, active)
-         VALUES (@address, @label, @source, @state, @active)
+        `INSERT INTO wallets (address, label, source, state, active, wallet_class)
+         VALUES (@address, @label, @source, @state, @active, 'incomplete')
          ON CONFLICT(address) DO UPDATE SET
            label = excluded.label,
            source = excluded.source,
@@ -79,8 +79,8 @@ export class WalletModel {
   insertIfMissing(input: { address: string; label?: string; source?: WalletSource; state?: WalletState; active?: boolean }): boolean {
     const result = this.db
       .prepare(
-        `INSERT INTO wallets (address, label, source, state, active)
-         VALUES (@address, @label, @source, @state, @active)
+        `INSERT INTO wallets (address, label, source, state, active, wallet_class)
+         VALUES (@address, @label, @source, @state, @active, 'incomplete')
          ON CONFLICT(address) DO NOTHING`
       )
       .run({
