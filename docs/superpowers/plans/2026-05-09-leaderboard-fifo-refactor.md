@@ -76,7 +76,7 @@ for each trade in chronological order:
       })
 
     // if remaining > 0, sell exceeded available inventory:
-    // - This is sell of pre-window inventory. SKIP it (no cost basis).
+    // - This is inventory not present in the seeded trade set. SKIP it (no cost basis).
     // - Do NOT book the unmatched portion as profit.
     // - Log a debug counter for visibility.
 
@@ -85,6 +85,18 @@ at end of window for each (wallet, mint):
     // open position — sum remaining lots into locked_sol
     locked_sol += sum(lot.sol for lot in lots)
 ```
+
+### Pre-cutoff BUY seeding
+
+The 30-day window query selects BUYs from before the cutoff in addition to all
+trades after it. This seeds `matchFifo` with the wallet's actual pre-window
+inventory so SELLs landing inside the window can match against opens that
+predate the cutoff. Without seeding, those SELLs become `unmatched_sells` and
+their realized P&L (and the wallet_class signal that depends on it) is lost.
+
+Cycles produced from a pre-cutoff BUY -> in-window SELL pair are still counted
+as in-window closes: the SELL's `block_time` is what the report attributes the
+cycle to.
 
 **Per-wallet aggregation:**
 - `n_closed` = number of cycles emitted for that wallet
@@ -121,14 +133,16 @@ SELECT wallet_address AS wallet,
        COALESCE(amount_sol, 0)   AS amount_sol,
        COALESCE(amount_usd, 0)   AS amount_usd
 FROM trades
-WHERE block_time > ?
+WHERE (block_time > ? OR (block_time <= ? AND trade_type = 'BUY'))
   AND wallet_address IN (SELECT address FROM wallets WHERE active = 1)
 ORDER BY wallet_address, token_mint, block_time, id
 ```
 
 The `ORDER BY ... id` tie-breaker is critical for deterministic ordering when two trades share `block_time` (block-bundled txs).
 
-Keep the `cutoff = generated_at - WINDOW_SEC` semantics. Do NOT widen the window to include pre-cutoff lots — that is the point of `n_closed_30d` (closures within the last 30 days).
+Keep the `cutoff = generated_at - WINDOW_SEC` semantics for reporting closes.
+The query additionally includes pre-cutoff BUYs only as FIFO seed inventory so
+in-window SELLs can retain their cost basis.
 
 `abs()` on `amount_*` for sells: trades are stored with negative `amount_token` / `amount_sol` for sells (per `scripts/backfill-usd.ts` precedent). Codex must verify this by reading `src/storage/models/trades.ts` and one or two sample sell rows; if storage is unsigned, drop the abs() calls. **This is a load-bearing assumption — verify before writing.**
 
@@ -292,7 +306,7 @@ round-trip.
 Fixes:
 - buy→sell→buy→sell on same mint now counts as 2 cycles (was 1 PARTIAL)
 - per-cycle hold time, pnl_sol, pnl_usd
-- sells of pre-window inventory are dropped (no fake profit)
+- sells with no matching seeded inventory are dropped (no fake profit)
 - partial exits leave correct remaining lots in locked_sol
 
 Pure matcher extracted to src/engine/fifo-matcher.ts with 14 unit tests

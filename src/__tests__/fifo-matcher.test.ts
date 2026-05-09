@@ -231,4 +231,31 @@ describe("matchFifo", () => {
     expect(result.open).toEqual([]);
     expect(result.unmatched_sells).toBe(0);
   });
+
+  it("sorts non-chronological input by block_time before matching", () => {
+    const result = matchFifo([
+      sell({ wallet: "w1", mint: "m1", amount_token: 10, amount_sol: 2, amount_usd: 200, block_time: 200 }),
+      buy({ wallet: "w1", mint: "m1", amount_token: 10, amount_sol: 1, amount_usd: 100, block_time: 100 })
+    ]);
+
+    expect(result.cycles).toHaveLength(1);
+    expectCycle(result.cycles[0], { wallet: "w1", mint: "m1", cost_sol: 1, proceeds_sol: 2, hold_time_s: 100 });
+    expect(result.open).toEqual([]);
+    expect(result.unmatched_sells).toBe(0);
+  });
+
+  it("preserves input order for equal block_time", () => {
+    const result = matchFifo([
+      buy({ wallet: "w1", mint: "m1", amount_token: 5, amount_sol: 1, amount_usd: 100, block_time: 100 }),
+      buy({ wallet: "w1", mint: "m1", amount_token: 5, amount_sol: 2, amount_usd: 200, block_time: 100 }),
+      sell({ wallet: "w1", mint: "m1", amount_token: 5, amount_sol: 3, amount_usd: 300, block_time: 200 }),
+      sell({ wallet: "w1", mint: "m1", amount_token: 5, amount_sol: 4, amount_usd: 400, block_time: 200 })
+    ]);
+
+    expect(result.cycles).toHaveLength(2);
+    expectCycle(result.cycles[0], { cost_sol: 1, proceeds_sol: 3 });
+    expectCycle(result.cycles[1], { cost_sol: 2, proceeds_sol: 4 });
+    expect(result.open).toEqual([]);
+    expect(result.unmatched_sells).toBe(0);
+  });
 });

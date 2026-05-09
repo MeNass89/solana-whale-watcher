@@ -178,11 +178,11 @@ function main(): void {
               COALESCE(amount_sol, 0) AS amount_sol,
               COALESCE(amount_usd, 0) AS amount_usd
        FROM trades
-       WHERE block_time > ?
+       WHERE (block_time > ? OR (block_time <= ? AND trade_type = 'BUY'))
          AND wallet_address IN (SELECT address FROM wallets WHERE active = 1)
        ORDER BY wallet_address, token_mint, block_time, id`
     )
-    .all(cutoff) as RawTrade[];
+    .all(cutoff, cutoff) as RawTrade[];
 
   const { metrics, unmatched_sells } = buildWalletMetrics(
     activeWallets.map((row) => row.address),

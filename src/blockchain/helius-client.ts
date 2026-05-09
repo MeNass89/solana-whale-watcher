@@ -31,7 +31,11 @@ export interface HeliusTransaction {
 }
 
 export class HeliusRequestError extends Error {
-  constructor(public readonly status: number, message: string) {
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly retryAfterSeconds: number | null = null
+  ) {
     super(message);
     this.name = "HeliusRequestError";
   }
@@ -128,7 +132,12 @@ export class HeliusClient implements IChainMonitor {
         params: { id: mint }
       })
     });
-    if (!response.ok) throw new Error(`Helius DAS getAsset failed: ${response.status}`);
+    if (!response.ok) {
+      if (response.status === 429 || response.status === 401 || response.status === 403 || response.status >= 500) {
+        throw new HeliusRequestError(response.status, `Helius DAS getAsset failed (${response.status})`, parseRetryAfter(response.headers.get("retry-after")));
+      }
+      throw new Error(`Helius DAS getAsset failed: ${response.status}`);
+    }
     const result = (await response.json()) as { result?: unknown; error?: unknown };
     if (result.error) throw new Error(`Helius DAS getAsset error: ${JSON.stringify(result.error)}`);
     return result.result ?? null;
@@ -154,4 +163,10 @@ export class HeliusClient implements IChainMonitor {
     if (!this.apiKey) throw new Error("HELIUS_API_KEY is required");
     if (!webhookUrl) throw new Error("PUBLIC_WEBHOOK_URL is required");
   }
+}
+
+function parseRetryAfter(header: string | null): number | null {
+  if (!header) return null;
+  const seconds = Number(header);
+  return Number.isFinite(seconds) ? seconds : null;
 }

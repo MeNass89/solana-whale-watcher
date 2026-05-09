@@ -185,21 +185,25 @@ export class TradeExecutor {
 
     try {
       const decimals = Math.max(0, Math.trunc(this.tokenDecimals(current.token_mint)));
+      let actualSellTokenAmount = sellAmountToken;
+      const amountLamports = (() => {
+        // Split integer/fractional parts so high-decimal tokens with large
+        // balances don't lose integer precision via float scaling.
+        if (!Number.isFinite(sellAmountToken) || sellAmountToken <= 0) return 1n;
+        const scale = 10n ** BigInt(decimals);
+        const flooredTokenAmount = Math.floor(sellAmountToken);
+        const intPart = BigInt(flooredTokenAmount);
+        const fracPart = sellAmountToken - flooredTokenAmount;
+        const fracBaseUnits = BigInt(Math.floor(fracPart * Number(scale)));
+        const total = intPart * scale + fracBaseUnits;
+        const sent = total < 1n ? 1n : total;
+        actualSellTokenAmount = Number(sent) / Number(scale);
+        return sent;
+      })();
       const result = await this.swaps.executeSwap({
         inputMint: current.token_mint,
         outputMint: USDC_MINT,
-        amountLamports: (() => {
-          // Split integer/fractional parts so high-decimal tokens with large
-          // balances don't lose integer precision via float scaling.
-          if (!Number.isFinite(sellAmountToken) || sellAmountToken <= 0) return 1n;
-          const scale = 10n ** BigInt(decimals);
-          const flooredTokenAmount = Math.floor(sellAmountToken);
-          const intPart = BigInt(flooredTokenAmount);
-          const fracPart = sellAmountToken - flooredTokenAmount;
-          const fracBaseUnits = BigInt(Math.floor(fracPart * Number(scale)));
-          const total = intPart * scale + fracBaseUnits;
-          return total < 1n ? 1n : total;
-        })(),
+        amountLamports,
         slippageBps,
         isExitSwap: true,
         panicExit,
@@ -212,12 +216,12 @@ export class TradeExecutor {
         throw new Error(`exit swap returned non-positive outputAmount: ${result.outputAmount}`);
       }
       const exitUsd = result.outputAmount;
-      const exitPrice = sellAmountToken > 0 ? exitUsd / sellAmountToken : priceUsd;
-      const pnlUsd = sellAmountToken * (exitPrice - current.entry_price_usd);
+      const exitPrice = actualSellTokenAmount > 0 ? exitUsd / actualSellTokenAmount : priceUsd;
+      const pnlUsd = actualSellTokenAmount * (exitPrice - current.entry_price_usd);
       const pnlPct = ((exitPrice - current.entry_price_usd) / current.entry_price_usd) * 100;
       this.fillExecution(executionId, {
         direction: "SELL",
-        amountToken: sellAmountToken,
+        amountToken: actualSellTokenAmount,
         amountUsd: exitUsd,
         priceUsd: exitPrice,
         txSignature: result.txSignature,
@@ -226,7 +230,7 @@ export class TradeExecutor {
         exitReason: reason
       });
       if (config.execution.mode === "paper") this.risk.updatePaperBalance(exitUsd);
-      const remaining = Math.max(0, current.amount_token - sellAmountToken);
+      const remaining = Math.max(0, current.amount_token - actualSellTokenAmount);
       this.positions.markExit(current, remaining, exitPrice, reason);
       try {
         await this.notifyPositionExit(current, reason, pnlUsd, pnlPct);
