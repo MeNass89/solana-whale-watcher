@@ -157,6 +157,11 @@ export class JupiterClient {
 
     await this.assertNetworkHealthy();
     const quote = await this.freshQuote(params);
+    if (BigInt(quote.inAmount) !== params.amountLamports) {
+      throw new Error(
+        `jupiter: quote.inAmount (${quote.inAmount}) does not match requested amountLamports (${params.amountLamports.toString()})`
+      );
+    }
     const allowedImpactPct = params.slippageBps != null ? params.slippageBps / 100 : 3;
     if (quote.priceImpactPct && Number(quote.priceImpactPct) > allowedImpactPct) {
       throw new Error(`Price impact ${quote.priceImpactPct}% exceeds ${allowedImpactPct}% limit`);
@@ -194,9 +199,12 @@ export class JupiterClient {
     });
     const inputAmount = await this.rawAmountToUi(params.inputMint, params.amountLamports, quote?.inputDecimals);
     if (quote && BigInt(quote.inAmount) !== params.amountLamports) {
-      logger.warn(
-        { inputMint: params.inputMint, requested: params.amountLamports.toString(), quoted: quote.inAmount },
-        "jupiter: quote.inAmount does not match requested amountLamports"
+      // A mismatched quote means the swap simulation priced a different size
+      // than we requested. Recording the fill against the requested size
+      // would attribute a wrong entry price; rejecting is safer than silent
+      // P&L corruption.
+      throw new Error(
+        `jupiter: quote.inAmount (${quote.inAmount}) does not match requested amountLamports (${params.amountLamports.toString()})`
       );
     }
     let outputAmount: number;

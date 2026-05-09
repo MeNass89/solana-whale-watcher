@@ -84,6 +84,8 @@ Purpose: produce the canonical wallet ranking. Outputs both human-readable table
 
 Logic:
 
+> **SUPERSEDED:** This (wallet, token_mint) aggregate-cycle plan was replaced by FIFO lot matching. See `src/engine/fifo-matcher.ts` and `docs/superpowers/plans/2026-05-09-leaderboard-fifo-refactor.md`. The implementation tracks per-lot opens/closes/partials rather than netting whole-token positions.
+
 1. For each wallet in `wallets` table where `active = 1`, aggregate from `trades` (last 30 days, `block_time > now - 30*86400`):
     - `n_buys`, `n_sells`, `n_trades = n_buys + n_sells`
     - Group by `(wallet, token_mint)`:

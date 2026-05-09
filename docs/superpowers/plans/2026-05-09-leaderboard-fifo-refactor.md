@@ -33,7 +33,7 @@ For each `(wallet, mint)` pair, walk all trades in the 30-day window **chronolog
 
 Maintain a FIFO queue per pair: `lots: Array<{ tok: number; sol: number; usd: number; time: number }>`.
 
-```
+```text
 for each trade in chronological order:
   if BUY:
     lots.push({ tok: amount_token, sol: amount_sol, usd: amount_usd, time: block_time })
@@ -281,7 +281,7 @@ This is a **surgical algorithmic correctness fix**, not a rewrite of the leaderb
 
 ## 9. Commit message template
 
-```
+```text
 fix(leaderboard): FIFO inventory matching for accurate per-cycle PnL
 
 Replaces SQL CASE-aggregation that collapsed every (wallet, mint) round-trip

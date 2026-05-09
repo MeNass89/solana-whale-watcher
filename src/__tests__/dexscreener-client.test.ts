@@ -24,6 +24,12 @@ describe("DexScreenerClient", () => {
 
   it("throws DexScreenerRateLimitError on 429 so callers can back off", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Too Many Requests", { status: 429, headers: { "retry-after": "2" } })));
-    await expect(new DexScreenerClient().getTokenPairs("anymint")).rejects.toBeInstanceOf(DexScreenerRateLimitError);
+    try {
+      await new DexScreenerClient().getTokenPairs("anymint");
+      expect.fail("expected DexScreenerRateLimitError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DexScreenerRateLimitError);
+      expect((err as DexScreenerRateLimitError).retryAfterSeconds).toBe(2);
+    }
   });
 });
