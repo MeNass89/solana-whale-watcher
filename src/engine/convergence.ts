@@ -25,7 +25,7 @@ export class ConvergenceEngine {
     private readonly wallets: WalletModel,
     private readonly tokens: TokenModel,
     private readonly resolver: TokenResolver,
-    private readonly db?: AppDatabase
+    private readonly db: AppDatabase
   ) {}
 
   async checkConvergence(newTrade: ITradeEvent): Promise<ConvergenceRow | null> {
@@ -49,37 +49,35 @@ export class ConvergenceEngine {
     const total = totalUsd(recentBuys);
     let score = computeMvpScore(recentBuys, this.wallets.scoresFor([...uniqueWallets]));
 
-    if (this.db) {
-      const signals = computeManipulationSignals(recentBuys, recentSells, this.wallets, this.db);
-      score = applyManipulationPenalty(score, signals);
-    }
+    const signals = computeManipulationSignals(recentBuys, recentSells, this.wallets, this.db);
+    score = applyManipulationPenalty(score, signals);
 
-    let tier: "CRITICAL" | "NOTABLE" | "WATCH" = score >= 75 ? "CRITICAL" : score >= 40 ? "NOTABLE" : "WATCH";
-
-    if (uniqueWallets.size < getMinWalletsForTier(tier)) {
-      if (tier === "CRITICAL") tier = "NOTABLE";
-      else if (tier === "NOTABLE") tier = "WATCH";
-    }
+    let tier = pickTier(score, uniqueWallets.size);
 
     const tierWindowSeconds = tier === "CRITICAL" ? 30 * 60 : tier === "NOTABLE" ? 60 * 60 : windowSeconds;
     if (tierWindowSeconds < windowSeconds) {
       const tierSince = Math.floor(Date.now() / 1000) - tierWindowSeconds;
       const tierWallets = new Set(recentBuys.filter((t) => t.block_time >= tierSince).map((t) => t.wallet_address));
-      if (tierWallets.size < threshold) {
+      if (tierWallets.size < getMinWalletsForTier(tier)) {
         tier = tier === "CRITICAL" ? "NOTABLE" : "WATCH";
       }
     }
 
     const quality = this.wallets.qualityFor([...uniqueWallets]);
-    const triggers = [...uniqueWallets].map((addr) => quality.get(addr)).filter(Boolean);
+    const resolvedQuality = [...uniqueWallets].map((addr) => quality.get(addr));
+    const triggers = resolvedQuality.filter((q): q is NonNullable<typeof q> => Boolean(q));
+    const unresolvedCount = resolvedQuality.length - triggers.length;
 
+    // Reject only when EVERY trigger resolved AND every resolved one is bad —
+    // missing lookups stay neutral (don't flip allBad on a partial subset).
     const allBad =
       triggers.length > 0 &&
+      unresolvedCount === 0 &&
       triggers.every(
         (q) =>
-          q!.wallet_class === "loser" ||
-          q!.wallet_class === "accumulation_bot" ||
-          (q!.wallet_class === "incomplete" && q!.n_closed_30d === 0)
+          q.wallet_class === "loser" ||
+          q.wallet_class === "accumulation_bot" ||
+          (q.wallet_class === "incomplete" && q.n_closed_30d === 0)
       );
     if (allBad) {
       logger.info({ token: newTrade.tokenMint, walletCount: uniqueWallets.size }, "convergence rejected: no proven-alpha trigger");
@@ -87,14 +85,14 @@ export class ConvergenceEngine {
     }
 
     const hasTopAlpha = triggers.some(
-      (q) => q!.realized_sol_30d > TOP_ALPHA_REALIZED_SOL_30D && q!.n_closed_30d >= TOP_ALPHA_MIN_CLOSED_30D
+      (q) => q.realized_sol_30d > TOP_ALPHA_REALIZED_SOL_30D && q.n_closed_30d >= TOP_ALPHA_MIN_CLOSED_30D
     );
-    const avgPnl = triggers.reduce((sum, q) => sum + (q!.realized_sol_30d ?? 0), 0) / Math.max(triggers.length, 1);
+    const avgPnl = triggers.reduce((sum, q) => sum + (q.realized_sol_30d ?? 0), 0) / Math.max(triggers.length, 1);
 
     if (hasTopAlpha) {
-      if (tier === "WATCH") tier = "NOTABLE";
-      else if (tier === "NOTABLE") tier = "CRITICAL";
-      logger.info({ token: newTrade.tokenMint, avgPnl, hasTopAlpha: true }, "tier boosted by alpha trigger");
+      const boosted = tier === "WATCH" ? "NOTABLE" : tier === "NOTABLE" ? "CRITICAL" : tier;
+      tier = pickTier(scoreForTier(boosted), uniqueWallets.size, boosted);
+      logger.info({ token: newTrade.tokenMint, avgPnl, hasTopAlpha: true, tier }, "tier boosted by alpha trigger (re-validated against wallet floor)");
     }
 
     const convergence = this.convergences.create({
@@ -126,11 +124,9 @@ export class ConvergenceEngine {
       logger.error({ error, convergenceId: convergence.id, attempt }, "trade execution failed for convergence");
     });
 
-    if (this.db) {
-      discoverCoBuyers(this.db, this.wallets, convergence.token_mint, convergence.first_trade_at, config.convergence.windowMinutes).catch((error) => {
-        logger.warn({ err: error instanceof Error ? error : new Error(String(error)) }, "co-buyer scan failed");
-      });
-    }
+    discoverCoBuyers(this.db, this.wallets, convergence.token_mint, convergence.first_trade_at, config.convergence.windowMinutes).catch((error) => {
+      logger.warn({ err: error instanceof Error ? error : new Error(String(error)) }, "co-buyer scan failed");
+    });
   }
 }
 
@@ -138,4 +134,26 @@ function totalUsd(trades: TradeRow[]): number | undefined {
   const values = trades.map((trade) => trade.amount_usd).filter((value): value is number => value !== null);
   if (values.length === 0) return undefined;
   return values.reduce((sum, value) => sum + value, 0);
+}
+
+type ConvergenceTier = "CRITICAL" | "NOTABLE" | "WATCH";
+
+// Pick the highest tier whose score floor AND wallet floor are both satisfied.
+// `preferred` lets a boosted tier propose itself; we still validate against
+// getMinWalletsForTier so a boost on too-few wallets falls back cleanly.
+function pickTier(score: number, walletCount: number, preferred?: ConvergenceTier): ConvergenceTier {
+  const candidates: ConvergenceTier[] = preferred
+    ? [preferred, ...(["CRITICAL", "NOTABLE", "WATCH"] as ConvergenceTier[]).filter((t) => t !== preferred)]
+    : (["CRITICAL", "NOTABLE", "WATCH"] as ConvergenceTier[]);
+  for (const tier of candidates) {
+    const minScore = scoreForTier(tier);
+    if (score >= minScore && walletCount >= getMinWalletsForTier(tier)) return tier;
+  }
+  return "WATCH";
+}
+
+function scoreForTier(tier: ConvergenceTier): number {
+  if (tier === "CRITICAL") return 75;
+  if (tier === "NOTABLE") return 40;
+  return 0;
 }

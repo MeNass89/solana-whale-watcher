@@ -4,6 +4,12 @@ import { config } from "../../config/index.js";
 
 export async function verifyHeliusHmac(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const expected = config.helius.webhookSecret;
+  if (!expected) {
+    request.log.error("verifyHeliusHmac: HELIUS_WEBHOOK_SECRET is not configured — rejecting all requests");
+    await reply.code(503).send({ error: "Webhook auth not configured" });
+    return;
+  }
+
   const authHeader = firstHeader(request.headers["authorization"]);
   if (authHeader && safeEqual(authHeader, expected)) return;
 

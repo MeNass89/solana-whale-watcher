@@ -15,11 +15,35 @@ export async function checkWebhookHealth(
     return;
   }
 
-  const webhook = await helius.getWebhook(webhookId);
+  let webhook: Awaited<ReturnType<HeliusClient["getWebhook"]>>;
+  try {
+    webhook = await helius.getWebhook(webhookId);
+  } catch (error) {
+    logger.error(
+      { err: error instanceof Error ? error : new Error(String(error)), webhookId },
+      "webhook-health: getWebhook failed (transient/auth/network) — skipping heal to avoid thrashing Helius"
+    );
+    return;
+  }
 
-  if (!webhook) {
-    logger.warn({ webhookId }, "webhook-health: webhook not found or unreachable — attempting re-enable");
-    const addresses = wallets ? wallets.listActive().map((w) => w.address) : [];
+  const addresses = wallets ? wallets.listActive().map((w) => w.address) : [];
+  const needsHeal = !webhook || isDisabled(webhook) || (webhook.accountAddresses?.length ?? 0) === 0;
+
+  if (needsHeal) {
+    if (addresses.length === 0) {
+      logger.error({ webhookId }, "webhook-health: refusing to heal with empty wallet list — would unsubscribe the bot");
+      await discord.send({
+        embeds: [{
+          title: "🚨 Webhook Heal SKIPPED — No Active Wallets",
+          description: `Webhook \`${webhookId.substring(0, 8)}…\` is disabled/unreachable, but the active wallet list is empty. Manual intervention required.`,
+          color: 0xff3366,
+          timestamp: new Date().toISOString()
+        }]
+      }, "CRITICAL");
+      return;
+    }
+
+    logger.warn({ webhookId, walletCount: addresses.length }, "webhook-health: webhook unhealthy — attempting re-enable");
     try {
       await helius.updateWebhook(webhookId, addresses, publicWebhookUrl);
       logger.info({ webhookId }, "webhook-health: webhook re-enabled successfully");
@@ -45,5 +69,13 @@ export async function checkWebhookHealth(
     return;
   }
 
-  logger.info({ webhookId: webhookId.substring(0, 8), addresses: webhook.accountAddresses?.length ?? 0 }, "webhook-health: webhook OK");
+  logger.info({ webhookId: webhookId.substring(0, 8), addresses: webhook!.accountAddresses?.length ?? 0 }, "webhook-health: webhook OK");
+}
+
+function isDisabled(webhook: { webhookType?: string } & Record<string, unknown>): boolean {
+  const status = webhook["status"];
+  if (typeof status === "string" && /disabled|inactive|paused/i.test(status)) return true;
+  const enabled = webhook["enabled"];
+  if (enabled === false) return true;
+  return false;
 }

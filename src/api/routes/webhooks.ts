@@ -30,11 +30,11 @@ export async function registerWebhookRoutes(
     const parsedTrades = parseEnhancedTransactions(request.body, activeWallets);
 
     for (const trade of parsedTrades) {
-      const inserted = deps.trades.insert(trade);
       if (isRapidReversal(trade)) {
-        logger.info({ wallet: logWallet(trade.walletAddress), token: trade.tokenMint, type: trade.tradeType }, "rapid-reversal filtered (MEV suspect)");
+        logger.info({ wallet: logWallet(trade.walletAddress), token: trade.tokenMint, type: trade.tradeType }, "rapid-reversal filtered (MEV suspect) — not persisted");
         continue;
       }
+      const inserted = deps.trades.insert(trade);
       if (!inserted) continue;
       deps.wallets.markTrade(trade.walletAddress, trade.blockTime);
       logger.info({ wallet: logWallet(trade.walletAddress), token: trade.tokenMint, type: trade.tradeType }, "trade ingested");

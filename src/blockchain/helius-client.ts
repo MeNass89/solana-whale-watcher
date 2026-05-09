@@ -29,6 +29,13 @@ export interface HeliusTransaction {
   fee?: number;
 }
 
+export class HeliusRequestError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "HeliusRequestError";
+  }
+}
+
 export class HeliusClient implements IChainMonitor {
   constructor(private readonly apiKey = config.helius.apiKey) {}
 
@@ -69,8 +76,10 @@ export class HeliusClient implements IChainMonitor {
     if (!this.apiKey || !webhookId) return null;
     try {
       return await this.request<{ webhookID: string; webhookURL: string; accountAddresses: string[]; webhookType: string }>(`/v0/webhooks/${webhookId}`, { method: "GET" });
-    } catch {
-      return null;
+    } catch (error) {
+      const status = error instanceof HeliusRequestError ? error.status : undefined;
+      if (status === 404) return null;
+      throw error;
     }
   }
 
@@ -126,7 +135,7 @@ export class HeliusClient implements IChainMonitor {
     });
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Helius request failed (${response.status}): ${body}`);
+      throw new HeliusRequestError(response.status, `Helius request failed (${response.status}): ${body}`);
     }
     return (await response.json()) as T;
   }

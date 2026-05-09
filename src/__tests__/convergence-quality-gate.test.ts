@@ -73,7 +73,7 @@ function setup(): {
   return {
     db,
     trades,
-    engine: new ConvergenceEngine(trades, convergences, wallets, tokens, resolver)
+    engine: new ConvergenceEngine(trades, convergences, wallets, tokens, resolver, db)
   };
 }
 
@@ -82,10 +82,14 @@ function insertWallet(
   address: string,
   input: { walletClass: string; realizedSol: number; nClosed: number }
 ): void {
+  // Mature wallet defaults so the manipulation-penalty (fresh-wallet) signal
+  // doesn't artificially crush scores in tier-boost tests; freshness is
+  // exercised in dedicated manipulation-detector tests.
+  const matureAddedAt = Math.floor(Date.now() / 1000) - 30 * 86400;
   db.prepare(
-    `INSERT INTO wallets (address, score, state, active, realized_sol_30d, n_closed_30d, wallet_class)
-     VALUES (?, 0, 'ACTIVE', 1, ?, ?, ?)`
-  ).run(address, input.realizedSol, input.nClosed, input.walletClass);
+    `INSERT INTO wallets (address, score, state, active, realized_sol_30d, n_closed_30d, wallet_class, added_at, total_trades)
+     VALUES (?, 0, 'ACTIVE', 1, ?, ?, ?, ?, 50)`
+  ).run(address, input.realizedSol, input.nClosed, input.walletClass, matureAddedAt);
 }
 
 function insertBuy(trades: TradeModel, walletAddress: string, tokenMint: string, sequence: number): ITradeEvent {

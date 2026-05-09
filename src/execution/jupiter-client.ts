@@ -198,10 +198,12 @@ export class JupiterClient {
       outputAmount = await this.rawAmountToUi(params.outputMint, BigInt(quote.outAmount), quote.outputDecimals);
     } else {
       outputAmount = await this.fallbackOutputAmount(params, inputAmount);
-      if (!Number.isFinite(outputAmount) || outputAmount <= 0 || outputAmount > 1e30) {
-        logger.warn({ inputMint: params.inputMint, outputMint: params.outputMint, outputAmount }, "paper swap: fallback produced insane output amount, rejecting");
-        throw new Error("Paper swap pricing produced invalid amount");
-      }
+    }
+    // Sanity-check both branches: a malformed quote (e.g. wrong decimals) can
+    // also produce an absurd outputAmount that would poison downstream PnL.
+    if (!Number.isFinite(outputAmount) || outputAmount <= 0 || outputAmount > 1e30) {
+      logger.warn({ inputMint: params.inputMint, outputMint: params.outputMint, outputAmount, quoted: Boolean(quote) }, "paper swap: produced insane output amount, rejecting");
+      throw new Error("Paper swap pricing produced invalid amount");
     }
 
     return {

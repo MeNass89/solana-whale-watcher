@@ -43,7 +43,10 @@ function computeSellPressure(buys: TradeRow[], sells: TradeRow[]): number {
 function computeFreshWalletFraction(buys: TradeRow[], walletModel: WalletModel): number {
   const wallets = [...new Set(buys.map((b) => b.wallet_address))];
   if (wallets.length === 0) return 0;
-  const fourteenDaysAgo = Math.floor(Date.now() / 1000) - 14 * 86400;
+  // Anchor freshness to the convergence's most-recent trade time (not Date.now())
+  // so backtests/replays are stable across runs.
+  const referenceTime = Math.max(...buys.map((b) => b.block_time));
+  const fourteenDaysAgo = referenceTime - 14 * 86400;
   let freshCount = 0;
   for (const addr of wallets) {
     const w = walletModel.find(addr);

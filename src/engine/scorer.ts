@@ -31,21 +31,24 @@ const MEV_HOLD_TIME_THRESHOLD_SEC = 30;
 const WASH_TRADE_WINDOW_SEC = 5 * 60;
 const WASH_TRADE_FRACTION_THRESHOLD = 0.2;
 
+// FIFO match: for each mint, consume each buy fill exactly once against the
+// next sell fill in time order. Without this, a single sell would generate a
+// hold time against every prior buy of that mint, falsely tripping isMev.
 function computeHoldTimes(trades: TradeRow[]): number[] {
   const holdTimes: number[] = [];
-  const buysByMint = new Map<string, TradeRow[]>();
-  for (const t of trades) {
+  const sorted = [...trades].sort((a, b) => a.block_time - b.block_time);
+  const buyQueueByMint = new Map<string, TradeRow[]>();
+  for (const t of sorted) {
     if (t.trade_type === "BUY") {
-      if (!buysByMint.has(t.token_mint)) buysByMint.set(t.token_mint, []);
-      buysByMint.get(t.token_mint)!.push(t);
+      if (!buyQueueByMint.has(t.token_mint)) buyQueueByMint.set(t.token_mint, []);
+      buyQueueByMint.get(t.token_mint)!.push(t);
+    } else if (t.trade_type === "SELL") {
+      const queue = buyQueueByMint.get(t.token_mint);
+      if (queue && queue.length > 0) {
+        const buy = queue.shift()!;
+        holdTimes.push(t.block_time - buy.block_time);
+      }
     }
-  }
-  for (const t of trades) {
-    if (t.trade_type !== "SELL") continue;
-    const buys = buysByMint.get(t.token_mint);
-    if (!buys || buys.length === 0) continue;
-    const lastBuy = buys.filter((b) => b.block_time <= t.block_time).pop();
-    if (lastBuy) holdTimes.push(t.block_time - lastBuy.block_time);
   }
   return holdTimes;
 }
@@ -57,27 +60,24 @@ function median(arr: number[]): number | null {
   return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+// Same FIFO discipline as computeHoldTimes: pair each buy with the next
+// unmatched sell of the same mint and count the round-trip exactly once.
 function detectWashTrading(trades: TradeRow[]): boolean {
+  const sorted = [...trades].sort((a, b) => a.block_time - b.block_time);
+  const buyQueueByMint = new Map<string, TradeRow[]>();
   let washCount = 0;
   let roundTripCount = 0;
-  const sellsByMint = new Map<string, TradeRow[]>();
-  for (const t of trades) {
-    if (t.trade_type === "SELL") {
-      if (!sellsByMint.has(t.token_mint)) sellsByMint.set(t.token_mint, []);
-      sellsByMint.get(t.token_mint)!.push(t);
-    }
-  }
-  for (const t of trades) {
-    if (t.trade_type !== "BUY") continue;
-    const sells = sellsByMint.get(t.token_mint);
-    if (!sells) continue;
-    const matchingSell = sells.find((s) => s.block_time >= t.block_time && s.block_time - t.block_time <= WASH_TRADE_WINDOW_SEC);
-    if (matchingSell) {
-      washCount++;
-      roundTripCount++;
-    } else {
-      const laterSell = sells.find((s) => s.block_time >= t.block_time);
-      if (laterSell) roundTripCount++;
+  for (const t of sorted) {
+    if (t.trade_type === "BUY") {
+      if (!buyQueueByMint.has(t.token_mint)) buyQueueByMint.set(t.token_mint, []);
+      buyQueueByMint.get(t.token_mint)!.push(t);
+    } else if (t.trade_type === "SELL") {
+      const queue = buyQueueByMint.get(t.token_mint);
+      if (queue && queue.length > 0) {
+        const buy = queue.shift()!;
+        roundTripCount++;
+        if (t.block_time - buy.block_time <= WASH_TRADE_WINDOW_SEC) washCount++;
+      }
     }
   }
   return roundTripCount > 0 && washCount / roundTripCount > WASH_TRADE_FRACTION_THRESHOLD;
