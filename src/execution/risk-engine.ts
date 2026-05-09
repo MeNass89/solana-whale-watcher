@@ -146,7 +146,9 @@ export class RiskEngine {
     const solAmounts = buys.map((trade) => trade.amount_sol ?? 0).filter((value) => value > 0);
     if (solAmounts.length === 0) return MIRROR_FALLBACK_PCT;
     solAmounts.sort((a, b) => a - b);
-    const median = solAmounts[Math.floor(solAmounts.length / 2)];
+    // True median: average the two middle elements for even-length samples.
+    const mid = Math.floor(solAmounts.length / 2);
+    const median = solAmounts.length % 2 === 0 ? (solAmounts[mid - 1] + solAmounts[mid]) / 2 : solAmounts[mid];
     const solPriceUsd = await jupiterClient.getPriceUsd(SOL_MINT).catch(() => null);
     if (!solPriceUsd || solPriceUsd <= 0) return MIRROR_FALLBACK_PCT;
     const targetUsd = median * solPriceUsd;
@@ -258,10 +260,13 @@ export class RiskEngine {
   }
 
   async tokenLiquidityLive(mint: string): Promise<number | null> {
-    const overview = await birdEyeClient.getTokenOverview(mint);
+    // Both BirdEye and DexScreener now throw on 429/5xx; either failure must
+    // not skip the next fallback. Final fallback is the cached DB value.
+    const overview = await birdEyeClient.getTokenOverview(mint).catch((error) => {
+      logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: birdeye unavailable, falling through to dexscreener");
+      return null;
+    });
     if (overview?.liquidityUsd != null) return overview.liquidityUsd;
-    // DexScreener now throws on 429/5xx so callers can distinguish "no pairs"
-    // from "API unavailable". For risk decisions we fall back to cached DB.
     const pair = await dexScreenerClient.getBestPair(mint).catch((error) => {
       logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: dexscreener unavailable, falling back to cached liquidity");
       return null;
@@ -271,7 +276,10 @@ export class RiskEngine {
   }
 
   async tokenAgeLive(mint: string): Promise<number | null> {
-    const overview = await birdEyeClient.getTokenOverview(mint);
+    const overview = await birdEyeClient.getTokenOverview(mint).catch((error) => {
+      logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: birdeye unavailable for token age, trying dexscreener");
+      return null;
+    });
     if (overview?.createdAt) {
       return (Date.now() / 1000 - overview.createdAt) / 3600;
     }

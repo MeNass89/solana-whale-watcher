@@ -35,7 +35,6 @@ export async function runWalletScorer(
       const heliusTxs = await helius.getWalletTransactions(wallet.address, HELIUS_TX_LIMIT);
 
       const metrics = computeWalletMetrics(dbTrades, heliusTxs, wallet.address, wallet.state);
-      const externalPnl = await birdEyeClient.getWalletPnl(wallet.address);
       const oldState = wallet.state;
 
       if (metrics.isMev) {
@@ -52,12 +51,19 @@ export async function runWalletScorer(
         }, "wallet-scorer: wash trader detected; demoting");
       }
 
+      // Persist local metrics before the BirdEye call so a 429/timeout there
+      // can't block the MEV/wash demotion from being applied.
       wallets.updateScore(wallet.address, {
         score: metrics.score,
         winRate: metrics.winRate,
         avgRoi: metrics.avgRoi,
         totalTrades: metrics.totalTrades,
         state: metrics.state,
+      });
+
+      const externalPnl = await birdEyeClient.getWalletPnl(wallet.address).catch((err) => {
+        logger.warn({ address: wallet.address.substring(0, 12), err: err instanceof Error ? err : new Error(String(err)) }, "wallet-scorer: birdeye PnL fetch failed");
+        return null;
       });
 
       if (metrics.state === "ACTIVE" && oldState !== "ACTIVE") promoted++;

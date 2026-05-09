@@ -54,13 +54,17 @@ export class ConvergenceEngine {
 
     let tier = pickTier(score, uniqueWallets.size);
 
-    const tierWindowSeconds = tier === "CRITICAL" ? 30 * 60 : tier === "NOTABLE" ? 60 * 60 : windowSeconds;
-    if (tierWindowSeconds < windowSeconds) {
+    // Iteratively downgrade until the tier's tighter window has enough wallets.
+    // A single-step downgrade can land on a tier whose own window still doesn't
+    // satisfy its min-wallet floor (e.g. CRITICAL→NOTABLE where the 60min window
+    // also has too few unique wallets).
+    while (tier !== "WATCH") {
+      const tierWindowSeconds = tier === "CRITICAL" ? 30 * 60 : tier === "NOTABLE" ? 60 * 60 : windowSeconds;
+      if (tierWindowSeconds >= windowSeconds) break;
       const tierSince = Math.floor(Date.now() / 1000) - tierWindowSeconds;
       const tierWallets = new Set(recentBuys.filter((t) => t.block_time >= tierSince).map((t) => t.wallet_address));
-      if (tierWallets.size < getMinWalletsForTier(tier)) {
-        tier = tier === "CRITICAL" ? "NOTABLE" : "WATCH";
-      }
+      if (tierWallets.size >= getMinWalletsForTier(tier)) break;
+      tier = tier === "CRITICAL" ? "NOTABLE" : "WATCH";
     }
 
     const quality = this.wallets.qualityFor([...uniqueWallets]);

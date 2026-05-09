@@ -57,6 +57,11 @@ if (env.NODE_ENV === "production") {
   if (env.EXECUTION_ENABLED && env.EXECUTION_MODE === "live" && (!env.SOLANA_WALLET_PUBLIC || !env.SOLANA_WALLET_PRIVATE)) {
     throw new Error("SOLANA_WALLET_PUBLIC and SOLANA_WALLET_PRIVATE must be set for live execution");
   }
+  // BIRDEYE_API_KEY is intentionally NOT required in prod: every BirdEye client
+  // method (getSolUsdAt, getTokenOverview, getWalletPnl, getHistoricalPrices)
+  // checks `if (!this.apiKey)` and degrades to null/cached values. The risk
+  // engine and wallet scorer all have DexScreener / DB fallbacks, so the system
+  // stays operational without it — just with reduced enrichment quality.
 }
 
 export const config = {

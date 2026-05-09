@@ -1,7 +1,7 @@
 import path from "node:path";
 import DatabaseConstructor from "better-sqlite3";
 import { setTimeout as sleep } from "node:timers/promises";
-import { birdEyeClient, type HistoricalPrice } from "../src/blockchain/birdeye-client.js";
+import { birdEyeClient, BirdEyeRateLimitError, type HistoricalPrice } from "../src/blockchain/birdeye-client.js";
 import { config } from "../src/config/index.js";
 
 const DB_PATH = path.resolve(process.cwd(), config.databasePath);
@@ -102,11 +102,20 @@ async function main(): Promise<void> {
     let historyError: string | null = null;
     try {
       prices = await birdEyeClient.getHistoricalPrices(token.mint, token.minTs - HISTORY_PADDING_SEC, token.maxTs + HISTORY_PADDING_SEC, "5m");
+      await sleep(RATE_LIMIT_DELAY_MS);
     } catch (error) {
       historyError = error instanceof Error ? error.message : String(error);
       console.log(`  history_price failed: ${historyError}`);
+      // Honor BirdEye's retry-after on 429 instead of charging through with the
+      // standard 1s gap — repeated 429s otherwise just stack into a longer ban.
+      if (error instanceof BirdEyeRateLimitError) {
+        const waitMs = (error.retryAfterSeconds ?? 30) * 1000;
+        console.log(`  rate-limited — backing off ${waitMs}ms`);
+        await sleep(waitMs);
+      } else {
+        await sleep(RATE_LIMIT_DELAY_MS);
+      }
     }
-    await sleep(RATE_LIMIT_DELAY_MS);
 
     const fallbackTrades: Array<{ trade: TradeRow; reason: string }> = [];
     const trades = selectNullTradesForMint.all(token.mint) as TradeRow[];

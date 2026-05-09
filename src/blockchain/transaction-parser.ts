@@ -5,12 +5,17 @@ const RAPID_REVERSAL_WINDOW_SEC = 60;
 const recentTrades = new Map<string, { tradeType: TradeType; blockTime: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
-setInterval(() => {
+const cleanupInterval = setInterval(() => {
   const cutoff = Date.now() / 1000 - RAPID_REVERSAL_WINDOW_SEC * 2;
   for (const [key, entry] of recentTrades) {
     if (entry.blockTime < cutoff) recentTrades.delete(key);
   }
 }, CACHE_TTL_MS);
+
+export function stopRecentTradesCleanup(): void {
+  clearInterval(cleanupInterval);
+  recentTrades.clear();
+}
 
 export function isRapidReversal(trade: ITradeEvent): boolean {
   const key = `${trade.walletAddress}:${trade.tokenMint}`;

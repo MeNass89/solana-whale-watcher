@@ -155,7 +155,10 @@ export class TradeExecutor {
 
     const amountUsd = sellAmountToken * priceUsd;
     const exitLiquidityUsd = await this.risk.tokenLiquidityLive(current.token_mint);
-    const slippageBps = this.swaps.slippageBpsForLiquidity(exitLiquidityUsd) ?? 500;
+    // Panic exits prefer "execute at any reasonable price" over "miss the exit
+    // entirely"; widen the fallback to 20% when liquidity is unknown.
+    const fallbackBps = panicExit ? 2000 : 500;
+    const slippageBps = this.swaps.slippageBpsForLiquidity(exitLiquidityUsd) ?? fallbackBps;
     const executionId = this.createExecution({
       convergence: {
         id: current.convergence_id ?? 0,
@@ -181,7 +184,13 @@ export class TradeExecutor {
         panicExit,
         tier: current.tier
       });
-      const exitUsd = result.outputAmount > 0 ? result.outputAmount : amountUsd;
+      // outputAmount <= 0 means the swap did not actually deliver — falling back
+      // to amountUsd would record a phantom exit at the pre-trade mark price.
+      // Treat as failure so the position stays OPEN and can be retried.
+      if (!Number.isFinite(result.outputAmount) || result.outputAmount <= 0) {
+        throw new Error(`exit swap returned non-positive outputAmount: ${result.outputAmount}`);
+      }
+      const exitUsd = result.outputAmount;
       const exitPrice = sellAmountToken > 0 ? exitUsd / sellAmountToken : priceUsd;
       const pnlUsd = sellAmountToken * (exitPrice - current.entry_price_usd);
       const pnlPct = ((exitPrice - current.entry_price_usd) / current.entry_price_usd) * 100;

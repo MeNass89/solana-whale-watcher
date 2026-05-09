@@ -96,6 +96,8 @@ export class BirdEyeClient {
       const data = await this.request(`/defi/historical_price_unix?${params.toString()}`);
       return Number.isFinite(data?.value) ? data.value : null;
     } catch (error) {
+      // Surface 429s so callers can back off; everything else still degrades to null.
+      if (error instanceof BirdEyeRateLimitError) throw error;
       logger.warn({ unixTime, err: error instanceof Error ? error : new Error(String(error)) }, "birdeye: getSolUsdAt failed");
       return null;
     }
@@ -118,6 +120,7 @@ export class BirdEyeClient {
         createdAt: data.createdAt ? Math.floor(data.createdAt / 1000) : null
       };
     } catch (error) {
+      if (error instanceof BirdEyeRateLimitError) throw error;
       logger.warn({ mint, err: error instanceof Error ? error : new Error(String(error)) }, "birdeye: getTokenOverview failed");
       return null;
     }
@@ -144,6 +147,7 @@ export class BirdEyeClient {
         totalSellAmount: totalSell
       };
     } catch (error) {
+      if (error instanceof BirdEyeRateLimitError) throw error;
       logger.warn(
         { walletAddress: walletAddress.substring(0, 12), err: error instanceof Error ? error : new Error(String(error)) },
         "birdeye: getWalletPnl failed"

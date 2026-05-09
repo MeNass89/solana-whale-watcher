@@ -22,6 +22,7 @@ import { logger } from "./utils/logger.js";
 import { positionManager } from "./execution/position-manager.js";
 import { riskEngine } from "./execution/risk-engine.js";
 import { tradeExecutor } from "./execution/trade-executor.js";
+import { stopRecentTradesCleanup } from "./blockchain/transaction-parser.js";
 
 process.on("unhandledRejection", (err) => {
   logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "unhandled rejection (non-fatal)");
@@ -33,8 +34,14 @@ async function main(): Promise<void> {
   const db = openDatabase();
   process.removeAllListeners("SIGTERM");
   process.removeAllListeners("SIGINT");
-  process.on("SIGTERM", () => { logger.info("SIGTERM"); db.close(); process.exit(0); });
-  process.on("SIGINT", () => { logger.info("SIGINT"); db.close(); process.exit(0); });
+  const shutdown = (signal: string) => {
+    logger.info(signal);
+    stopRecentTradesCleanup();
+    db.close();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 
   const wallets = new WalletModel(db);
   seedWallets(wallets);
@@ -77,14 +84,28 @@ async function main(): Promise<void> {
   const leaderboardJob = () => runLeaderboardRefresh().catch((err) => {
     logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "leaderboard-refresh: job failed");
   });
+  // Run once at startup so freshly-deployed instances have wallet_class /
+  // realized_sol_30d immediately rather than waiting for the next 06:00 tick.
+  setTimeout(leaderboardJob, 90_000);
   setInterval(() => {
     const now = new Date();
     if (now.getHours() === 6 && now.getMinutes() === 0) leaderboardJob();
   }, 60 * 1000);
 
-  const webhookHealthJob = () => checkWebhookHealth(helius, config.helius.webhookId, config.server.publicWebhookUrl, new DiscordAlerter(), wallets).catch((err) => {
-    logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "webhook-health: job failed");
-  });
+  // Mutex prevents overlapping runs when the 15-min interval lands while a
+  // previous health check is still re-enabling a wedged webhook.
+  let webhookHealthRunning = false;
+  const webhookHealthJob = async () => {
+    if (webhookHealthRunning) return;
+    webhookHealthRunning = true;
+    try {
+      await checkWebhookHealth(helius, config.helius.webhookId, config.server.publicWebhookUrl, new DiscordAlerter(), wallets);
+    } catch (err) {
+      logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "webhook-health: job failed");
+    } finally {
+      webhookHealthRunning = false;
+    }
+  };
   setInterval(webhookHealthJob, 15 * 60 * 1000);
   setTimeout(webhookHealthJob, 120_000);
 

@@ -74,17 +74,26 @@ function computeCoOccurrence(buys: TradeRow[], db: AppDatabase): number {
     byConv.get(row.convergence_id)!.add(row.wallet_address);
   }
 
-  let pairCoCount = 0;
-  let totalPairs = 0;
-  for (let i = 0; i < wallets.length; i++) {
-    for (let j = i + 1; j < wallets.length; j++) {
-      totalPairs++;
-      let coCount = 0;
-      for (const [, wSet] of byConv) {
-        if (wSet.has(wallets[i]) && wSet.has(wallets[j])) coCount++;
+  // Build pair counts per convergence instead of scanning every convergence
+  // for every wallet pair. O(sum_c |W_c|^2) << O(|wallets|^2 * |convs|) when
+  // most convergences only touch a handful of monitored wallets.
+  const pairCounts = new Map<string, number>();
+  for (const [, wSet] of byConv) {
+    const inConv = [...wSet];
+    if (inConv.length < 2) continue;
+    inConv.sort();
+    for (let i = 0; i < inConv.length; i++) {
+      for (let j = i + 1; j < inConv.length; j++) {
+        const key = `${inConv[i]}|${inConv[j]}`;
+        pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
       }
-      if (coCount >= 3) pairCoCount++;
     }
+  }
+
+  const totalPairs = (wallets.length * (wallets.length - 1)) / 2;
+  let pairCoCount = 0;
+  for (const count of pairCounts.values()) {
+    if (count >= 3) pairCoCount++;
   }
   return totalPairs > 0 ? pairCoCount / totalPairs : 0;
 }
