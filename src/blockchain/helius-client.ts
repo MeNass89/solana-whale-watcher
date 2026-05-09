@@ -94,7 +94,14 @@ export class HeliusClient implements IChainMonitor {
       if (beforeSignature) url += `&before=${beforeSignature}`;
 
       const response = await fetch(url);
-      if (!response.ok) break;
+      if (!response.ok) {
+        // Rate-limit / server errors should surface to callers so the scorer can
+        // log and retry next cycle; other 4xx responses stop pagination cleanly.
+        if (response.status === 429 || response.status >= 500) {
+          throw new HeliusRequestError(response.status, `Helius getWalletTransactions failed (${response.status})`);
+        }
+        break;
+      }
       const batch = (await response.json()) as HeliusTransaction[];
       if (batch.length === 0) break;
 

@@ -34,7 +34,7 @@ export async function runWalletScorer(
       const dbTrades = trades.findByWalletSince(wallet.address, since);
       const heliusTxs = await helius.getWalletTransactions(wallet.address, HELIUS_TX_LIMIT);
 
-      const metrics = computeWalletMetrics(dbTrades, heliusTxs, wallet.address, wallet.state);
+      const metrics = computeWalletMetrics(dbTrades, heliusTxs, wallet.address);
       const oldState = wallet.state;
 
       if (metrics.isMev) {

@@ -92,10 +92,9 @@ function insertWallet(
   ).run(address, input.realizedSol, input.nClosed, input.walletClass, matureAddedAt);
 }
 
-// Convergence engine's WATCH window is 7200s (2h). Anchor the first trade just
-// inside that window so it's still counted, while subsequent trades are recent.
-const CONVERGENCE_WINDOW_SECONDS = 7200;
-const FIRST_TRADE_OFFSET_SEC = CONVERGENCE_WINDOW_SECONDS - 10;
+// Anchor every trade inside the CRITICAL 30-min narrow window without making
+// them so tightly clustered that the manipulation penalty dominates this test.
+const TRADE_OFFSETS_SEC = [1200, 600, 60];
 
 function insertBuy(trades: TradeModel, walletAddress: string, tokenMint: string, sequence: number): ITradeEvent {
   const now = Math.floor(Date.now() / 1000);
@@ -109,7 +108,7 @@ function insertBuy(trades: TradeModel, walletAddress: string, tokenMint: string,
     amountUsd: 500,
     dexSource: "Jupiter",
     tradeType: "BUY",
-    blockTime: sequence === 1 ? now - FIRST_TRADE_OFFSET_SEC : now - 10
+    blockTime: now - (TRADE_OFFSETS_SEC[sequence - 1] ?? 60)
   };
   const inserted = trades.insert(trade);
   if (!inserted) throw new Error("test trade insert failed");

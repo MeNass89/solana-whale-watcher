@@ -26,10 +26,15 @@ export async function checkWebhookHealth(
     return;
   }
 
-  const addresses = wallets ? wallets.listActive().map((w) => w.address) : [];
+  const activeAddresses = wallets ? wallets.listActive().map((w) => w.address) : [];
   const needsHeal = !webhook || isDisabled(webhook) || (webhook.accountAddresses?.length ?? 0) === 0;
 
   if (needsHeal) {
+    // If the local active list is transiently empty, use the webhook's
+    // last-known-good addresses. Only both-empty is truly unrecoverable.
+    const addresses = activeAddresses.length > 0
+      ? activeAddresses
+      : (webhook?.accountAddresses ?? []);
     if (addresses.length === 0) {
       logger.error({ webhookId }, "webhook-health: refusing to heal with empty wallet list — would unsubscribe the bot");
       await discord.send({

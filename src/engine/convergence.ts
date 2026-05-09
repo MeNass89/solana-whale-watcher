@@ -53,19 +53,7 @@ export class ConvergenceEngine {
     score = applyManipulationPenalty(score, signals);
 
     let tier = pickTier(score, uniqueWallets.size);
-
-    // Iteratively downgrade until the tier's tighter window has enough wallets.
-    // A single-step downgrade can land on a tier whose own window still doesn't
-    // satisfy its min-wallet floor (e.g. CRITICAL→NOTABLE where the 60min window
-    // also has too few unique wallets).
-    while (tier !== "WATCH") {
-      const tierWindowSeconds = tier === "CRITICAL" ? 30 * 60 : tier === "NOTABLE" ? 60 * 60 : windowSeconds;
-      if (tierWindowSeconds >= windowSeconds) break;
-      const tierSince = Math.floor(Date.now() / 1000) - tierWindowSeconds;
-      const tierWallets = new Set(recentBuys.filter((t) => t.block_time >= tierSince).map((t) => t.wallet_address));
-      if (tierWallets.size >= getMinWalletsForTier(tier)) break;
-      tier = tier === "CRITICAL" ? "NOTABLE" : "WATCH";
-    }
+    tier = validateTierWindow(tier, score, recentBuys, windowSeconds);
 
     const quality = this.wallets.qualityFor([...uniqueWallets]);
     const resolvedQuality = [...uniqueWallets].map((addr) => quality.get(addr));
@@ -95,8 +83,10 @@ export class ConvergenceEngine {
 
     if (hasTopAlpha) {
       const boosted = tier === "WATCH" ? "NOTABLE" : tier === "NOTABLE" ? "CRITICAL" : tier;
-      tier = pickTier(scoreForTier(boosted), uniqueWallets.size, boosted);
-      logger.info({ token: newTrade.tokenMint, avgPnl, hasTopAlpha: true, tier }, "tier boosted by alpha trigger (re-validated against wallet floor)");
+      // Boost is intentionally not gated on the penalized score; alpha presence
+      // is the trust signal. Revalidate the boosted tier's narrow-window floor.
+      tier = validateTierWindow(boosted, scoreForTier(boosted), recentBuys, windowSeconds);
+      logger.info({ token: newTrade.tokenMint, avgPnl, hasTopAlpha: true, tier }, "tier boosted by alpha trigger (re-validated against narrow-window floor)");
     }
 
     const convergence = this.convergences.create({
@@ -160,4 +150,31 @@ function scoreForTier(tier: ConvergenceTier): number {
   if (tier === "CRITICAL") return 75;
   if (tier === "NOTABLE") return 40;
   return 0;
+}
+
+function validateTierWindow(
+  candidate: ConvergenceTier,
+  score: number,
+  recentBuys: TradeRow[],
+  windowSeconds: number
+): ConvergenceTier {
+  let tier = candidate;
+  while (true) {
+    if (score < scoreForTier(tier)) {
+      if (tier === "CRITICAL") { tier = "NOTABLE"; continue; }
+      if (tier === "NOTABLE") { tier = "WATCH"; continue; }
+      return "WATCH";
+    }
+
+    const tierWindowSeconds = tier === "CRITICAL" ? 30 * 60 : tier === "NOTABLE" ? 60 * 60 : windowSeconds;
+    if (tierWindowSeconds >= windowSeconds) return tier;
+
+    const tierSince = Math.floor(Date.now() / 1000) - tierWindowSeconds;
+    const tierWallets = new Set(recentBuys.filter((t) => t.block_time >= tierSince).map((t) => t.wallet_address));
+    if (tierWallets.size >= getMinWalletsForTier(tier)) return tier;
+
+    if (tier === "CRITICAL") { tier = "NOTABLE"; continue; }
+    if (tier === "NOTABLE") { tier = "WATCH"; continue; }
+    return "WATCH";
+  }
 }

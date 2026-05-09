@@ -86,8 +86,7 @@ function detectWashTrading(trades: TradeRow[]): boolean {
 export function computeWalletMetrics(
   trades: TradeRow[],
   heliusTxs: HeliusTransaction[],
-  walletAddress: string,
-  currentState: WalletState
+  walletAddress: string
 ): WalletMetrics {
   const positions = buildPositions(trades, heliusTxs, walletAddress);
   const closed = positions.filter((p) => p.closed || p.sellAmount > 0);

@@ -20,7 +20,7 @@ describe("MEV detection in computeWalletMetrics", () => {
       makeTrade({ id: 5, trade_type: "BUY", token_mint: "tokenC", block_time: 1700000200, amount_sol: 3 }),
       makeTrade({ id: 6, trade_type: "SELL", token_mint: "tokenC", block_time: 1700000220, amount_sol: 3.03 }),
     ];
-    const metrics = computeWalletMetrics(trades, [], "wallet1", "NEW");
+    const metrics = computeWalletMetrics(trades, [], "wallet1");
     expect(metrics.isMev).toBe(true);
     expect(metrics.state).toBe("DEMOTED");
   });
@@ -30,7 +30,7 @@ describe("MEV detection in computeWalletMetrics", () => {
       makeTrade({ id: 1, trade_type: "BUY", token_mint: "tokenA", block_time: 1700000000, amount_sol: 1 }),
       makeTrade({ id: 2, trade_type: "SELL", token_mint: "tokenA", block_time: 1700003600, amount_sol: 1.5 }),
     ];
-    const metrics = computeWalletMetrics(trades, [], "wallet1", "NEW");
+    const metrics = computeWalletMetrics(trades, [], "wallet1");
     expect(metrics.isMev).toBe(false);
   });
 
@@ -40,7 +40,7 @@ describe("MEV detection in computeWalletMetrics", () => {
       trades.push(makeTrade({ id: i * 2 + 1, trade_type: "BUY", token_mint: `token${i}`, block_time: 1700000000 + i * 600, amount_sol: 1 }));
       trades.push(makeTrade({ id: i * 2 + 2, trade_type: "SELL", token_mint: `token${i}`, block_time: 1700000000 + i * 600 + (i < 5 ? 120 : 7200), amount_sol: 1.01 }));
     }
-    const metrics = computeWalletMetrics(trades, [], "wallet1", "ACTIVE");
+    const metrics = computeWalletMetrics(trades, [], "wallet1");
     expect(metrics.isWashTrader).toBe(true);
   });
 });
