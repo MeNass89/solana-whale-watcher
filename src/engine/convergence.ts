@@ -1,5 +1,4 @@
 import { config } from "../config/index.js";
-import { getMinWalletsForTier, getThreshold } from "../config/thresholds.js";
 import type { TokenResolver } from "../blockchain/token-resolver.js";
 import type { ITradeEvent } from "../blockchain/types.js";
 import type { AppDatabase } from "../storage/database.js";
@@ -8,15 +7,12 @@ import type { TokenModel } from "../storage/models/tokens.js";
 import type { TradeModel, TradeRow } from "../storage/models/trades.js";
 import type { WalletModel } from "../storage/models/wallets.js";
 import { passesMvpFilters } from "./filters.js";
-import { computeMvpScore, applyManipulationPenalty } from "./scorer.js";
-import { computeManipulationSignals } from "./manipulation-detector.js";
 import { tradeExecutor } from "../execution/trade-executor.js";
 import { discoverCoBuyers } from "../jobs/co-buyer-scanner.js";
 import { logger } from "../utils/logger.js";
 
-// V1 alpha trigger: require meaningful 30d realized SOL profit across enough closed cycles.
-const TOP_ALPHA_REALIZED_SOL_30D = 100;
-const TOP_ALPHA_MIN_CLOSED_30D = 5;
+const CONVERGENCE_THRESHOLD = 2;
+const MAX_SELL_RATIO = 0.3;
 
 export class ConvergenceEngine {
   constructor(
@@ -36,73 +32,34 @@ export class ConvergenceEngine {
     const since = nowSeconds - windowSeconds;
     const recentBuys = this.trades.findByTokenInWindow(newTrade.tokenMint, since, "BUY");
     const uniqueWallets = new Set(recentBuys.map((trade) => trade.wallet_address));
-    const totalActive = this.wallets.countActive();
-    const coreCount = this.wallets.countByState("ACTIVE");
-    const threshold = getThreshold(coreCount, totalActive);
-    if (uniqueWallets.size < threshold) return null;
+    if (uniqueWallets.size < CONVERGENCE_THRESHOLD) return null;
 
     const metadata = await this.resolver.resolve(newTrade.tokenMint).catch(() => ({ mint: newTrade.tokenMint }));
     if (!passesMvpFilters(newTrade.tokenMint, recentBuys, this.tokens, metadata)) return null;
 
     const recentSells = this.trades.findByTokenInWindow(newTrade.tokenMint, since, "SELL");
-    if (recentSells.length > 0 && recentSells.length / (recentBuys.length + recentSells.length) > 0.3) return null;
+    if (recentSells.length > 0 && recentSells.length / (recentBuys.length + recentSells.length) > MAX_SELL_RATIO) return null;
 
-    const total = totalUsd(recentBuys);
-    let score = computeMvpScore(recentBuys, this.wallets.scoresFor([...uniqueWallets]));
-
-    const signals = computeManipulationSignals(recentBuys, recentSells, this.wallets, this.db);
-    score = applyManipulationPenalty(score, signals);
-
-    let tier = pickTier(score, uniqueWallets.size);
-    tier = validateTierWindow(tier, score, recentBuys, windowSeconds, threshold, nowSeconds);
-
-    const quality = this.wallets.qualityFor([...uniqueWallets]);
-    const resolvedQuality = [...uniqueWallets].map((addr) => quality.get(addr));
-    const triggers = resolvedQuality.filter((q): q is NonNullable<typeof q> => Boolean(q));
-    const unresolvedCount = resolvedQuality.length - triggers.length;
-
-    // Reject only when EVERY trigger resolved AND every resolved one is bad —
-    // missing lookups stay neutral (don't flip allBad on a partial subset).
-    const allBad =
-      triggers.length > 0 &&
-      unresolvedCount === 0 &&
-      triggers.every(
-        (q) =>
-          q.wallet_class === "loser" ||
-          q.wallet_class === "accumulation_bot" ||
-          (q.wallet_class === "incomplete" && q.n_closed_30d === 0)
-      );
-    if (allBad) {
-      logger.info({ token: newTrade.tokenMint, walletCount: uniqueWallets.size }, "convergence rejected: no proven-alpha trigger");
-      return null;
-    }
-
-    const hasTopAlpha = triggers.some(
-      (q) => q.realized_sol_30d > TOP_ALPHA_REALIZED_SOL_30D && q.n_closed_30d >= TOP_ALPHA_MIN_CLOSED_30D
-    );
-    const avgPnl = triggers.reduce((sum, q) => sum + (q.realized_sol_30d ?? 0), 0) / Math.max(triggers.length, 1);
-
-    if (hasTopAlpha) {
-      const boosted = tier === "WATCH" ? "NOTABLE" : tier === "NOTABLE" ? "CRITICAL" : tier;
-      // Boost is intentionally not gated on the penalized score; alpha presence
-      // is the trust signal. Revalidate the boosted tier's narrow-window floor.
-      tier = validateTierWindow(boosted, scoreForTier(boosted), recentBuys, windowSeconds, threshold, nowSeconds);
-      logger.info({ token: newTrade.tokenMint, avgPnl, hasTopAlpha: true, tier }, "tier boosted by alpha trigger (re-validated against narrow-window floor)");
-    }
+    const tier = uniqueWallets.size >= 3 ? "CRITICAL" : "NOTABLE";
 
     const convergence = this.convergences.create({
       tokenMint: newTrade.tokenMint,
       tokenSymbol: "symbol" in metadata ? metadata.symbol : undefined,
-      score,
+      score: uniqueWallets.size * 30,
       tier,
       walletCount: uniqueWallets.size,
-      totalUsd: total,
+      totalUsd: totalUsd(recentBuys),
       firstTradeAt: Math.min(...recentBuys.map((trade) => trade.block_time)),
       lastTradeAt: Math.max(...recentBuys.map((trade) => trade.block_time)),
       windowMinutes: config.convergence.windowMinutes,
       trades: recentBuys
     });
-    if (tier !== "WATCH") this.executeConvergence(convergence, recentBuys);
+
+    logger.info(
+      { token: newTrade.tokenMint, tier, walletCount: uniqueWallets.size },
+      "convergence detected — executing"
+    );
+    this.executeConvergence(convergence, recentBuys);
     return convergence;
   }
 
@@ -129,55 +86,4 @@ function totalUsd(trades: TradeRow[]): number | undefined {
   const values = trades.map((trade) => trade.amount_usd).filter((value): value is number => value !== null);
   if (values.length === 0) return undefined;
   return values.reduce((sum, value) => sum + value, 0);
-}
-
-type ConvergenceTier = "CRITICAL" | "NOTABLE" | "WATCH";
-
-// Pick the highest tier whose score floor AND wallet floor are both satisfied.
-// `preferred` lets a boosted tier propose itself; we still validate against
-// getMinWalletsForTier so a boost on too-few wallets falls back cleanly.
-function pickTier(score: number, walletCount: number, preferred?: ConvergenceTier): ConvergenceTier {
-  const candidates: ConvergenceTier[] = preferred
-    ? [preferred, ...(["CRITICAL", "NOTABLE", "WATCH"] as ConvergenceTier[]).filter((t) => t !== preferred)]
-    : (["CRITICAL", "NOTABLE", "WATCH"] as ConvergenceTier[]);
-  for (const tier of candidates) {
-    const minScore = scoreForTier(tier);
-    if (score >= minScore && walletCount >= getMinWalletsForTier(tier)) return tier;
-  }
-  return "WATCH";
-}
-
-function scoreForTier(tier: ConvergenceTier): number {
-  if (tier === "CRITICAL") return 75;
-  if (tier === "NOTABLE") return 40;
-  return 0;
-}
-
-function validateTierWindow(
-  candidate: ConvergenceTier,
-  score: number,
-  recentBuys: TradeRow[],
-  windowSeconds: number,
-  threshold: number,
-  nowSeconds: number
-): ConvergenceTier {
-  let tier = candidate;
-  while (true) {
-    if (score < scoreForTier(tier)) {
-      if (tier === "CRITICAL") { tier = "NOTABLE"; continue; }
-      if (tier === "NOTABLE") { tier = "WATCH"; continue; }
-      return "WATCH";
-    }
-
-    const tierWindowSeconds = tier === "CRITICAL" ? 30 * 60 : tier === "NOTABLE" ? 60 * 60 : windowSeconds;
-    if (tierWindowSeconds >= windowSeconds) return tier;
-
-    const tierSince = nowSeconds - tierWindowSeconds;
-    const tierWallets = new Set(recentBuys.filter((t) => t.block_time >= tierSince).map((t) => t.wallet_address));
-    if (tierWallets.size >= Math.max(threshold, getMinWalletsForTier(tier))) return tier;
-
-    if (tier === "CRITICAL") { tier = "NOTABLE"; continue; }
-    if (tier === "NOTABLE") { tier = "WATCH"; continue; }
-    return "WATCH";
-  }
 }

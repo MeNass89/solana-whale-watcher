@@ -3,6 +3,8 @@ import { birdEyeClient } from "../blockchain/birdeye-client.js";
 import type { TradeModel } from "../storage/models/trades.js";
 import type { WalletModel } from "../storage/models/wallets.js";
 import type { WalletMonitor } from "../blockchain/wallet-monitor.js";
+import type { RpcRouter } from "../blockchain/rpc-router.js";
+import { fetchWalletTransactionsViaRpc } from "../blockchain/rpc-transaction-fetcher.js";
 import { computeWalletMetrics } from "../engine/scorer.js";
 import { logger } from "../utils/logger.js";
 
@@ -14,7 +16,8 @@ export async function runWalletScorer(
   wallets: WalletModel,
   trades: TradeModel,
   helius: HeliusClient,
-  monitor?: WalletMonitor
+  monitor?: WalletMonitor,
+  rpcRouter?: RpcRouter
 ): Promise<void> {
   const queue = wallets.findScoringQueue(BATCH_SIZE);
   if (queue.length === 0) {
@@ -32,7 +35,11 @@ export async function runWalletScorer(
   for (const wallet of queue) {
     try {
       const dbTrades = trades.findByWalletSince(wallet.address, since);
-      const heliusTxs = await helius.getWalletTransactions(wallet.address, HELIUS_TX_LIMIT);
+      // Prefer RPC-routed fetching (spreads load across Alchemy/Chainstack/Helius RPC
+      // free tiers) over Helius Enhanced REST API which burns costly daily credits.
+      const heliusTxs = rpcRouter
+        ? await fetchWalletTransactionsViaRpc(rpcRouter, wallet.address, HELIUS_TX_LIMIT)
+        : await helius.getWalletTransactions(wallet.address, HELIUS_TX_LIMIT);
 
       const metrics = computeWalletMetrics(dbTrades, heliusTxs, wallet.address);
       const oldState = wallet.state;

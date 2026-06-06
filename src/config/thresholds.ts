@@ -1,7 +1,7 @@
 import type { AlertTier } from "../blockchain/types.js";
 
-export function getThreshold(coreWallets: number, _totalWallets?: number): number {
-  return Math.max(2, Math.floor(Math.log2(Math.max(1, coreWallets)) + 1));
+export function getThreshold(_coreWallets: number, _totalWallets?: number): number {
+  return 2;
 }
 
 export function getMinWalletsForTier(tier: AlertTier): number {

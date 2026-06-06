@@ -23,6 +23,8 @@ import { positionManager } from "./execution/position-manager.js";
 import { riskEngine } from "./execution/risk-engine.js";
 import { tradeExecutor } from "./execution/trade-executor.js";
 import { stopRecentTradesCleanup } from "./blockchain/transaction-parser.js";
+import { getRpcRouter } from "./blockchain/rpc-router.js";
+import { RpcUsageLogger } from "./blockchain/rpc-usage-logger.js";
 
 process.on("unhandledRejection", (err) => {
   logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "unhandled rejection (non-fatal)");
@@ -32,11 +34,17 @@ process.on("SIGINT", () => { logger.info("SIGINT"); process.exit(0); });
 
 async function main(): Promise<void> {
   const db = openDatabase();
+
+  const rpcUsageLogger = new RpcUsageLogger(db);
+  rpcUsageLogger.start();
+  getRpcRouter().setUsageLogger(rpcUsageLogger);
+
   process.removeAllListeners("SIGTERM");
   process.removeAllListeners("SIGINT");
   const shutdown = (signal: string) => {
     logger.info(signal);
     stopRecentTradesCleanup();
+    rpcUsageLogger.stop();
     db.close();
     process.exit(0);
   };
@@ -77,7 +85,7 @@ async function main(): Promise<void> {
     if (scorerJobRunning) return;
     scorerJobRunning = true;
     try {
-      await runWalletScorer(wallets, trades, helius, monitor);
+      await runWalletScorer(wallets, trades, helius, monitor, getRpcRouter());
     } catch (err) {
       logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "wallet-scorer: job failed");
     } finally {
@@ -113,7 +121,7 @@ async function main(): Promise<void> {
     if (now.getHours() === 6 && now.getMinutes() === 0) leaderboardJobGuarded();
   }, 60 * 1000);
 
-  // Mutex prevents overlapping runs when the 15-min interval lands while a
+  // Mutex prevents overlapping runs when the 3-hour interval lands while a
   // previous health check is still re-enabling a wedged webhook.
   let webhookHealthRunning = false;
   const webhookHealthJob = async () => {
@@ -127,7 +135,7 @@ async function main(): Promise<void> {
       webhookHealthRunning = false;
     }
   };
-  setInterval(webhookHealthJob, 15 * 60 * 1000);
+  setInterval(webhookHealthJob, 3 * 60 * 60 * 1000);
   setTimeout(webhookHealthJob, 120_000);
 
   setInterval(() => {
@@ -140,7 +148,7 @@ async function main(): Promise<void> {
     logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "token-metadata: job failed");
   });
   setTimeout(metadataJob, 30_000);
-  setInterval(metadataJob, 5 * 60 * 1000);
+  setInterval(metadataJob, 60 * 60 * 1000);
 
   const priceTrackerJob = () => runPriceTracker(db).catch((err) => {
     logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "price-tracker: job failed");

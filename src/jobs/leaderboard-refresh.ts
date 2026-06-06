@@ -10,7 +10,7 @@ export function runLeaderboardRefresh(): Promise<void> {
     }, LEADERBOARD_TIMEOUT_MS);
     timer.unref();
     try {
-      refreshLeaderboard();
+      refreshLeaderboard({ applyPrune: true });
       clearTimeout(timer);
       logger.info("leaderboard-refresh: job completed");
       resolve();

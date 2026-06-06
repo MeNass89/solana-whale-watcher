@@ -3,7 +3,14 @@ import type { TokenModel } from "../storage/models/tokens.js";
 import type { TokenMetadata } from "../blockchain/types.js";
 import { config } from "../config/index.js";
 
+const NOISE_MINTS = new Set<string>([
+  "So11111111111111111111111111111111111111112",
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+]);
+
 export function passesMvpFilters(tokenMint: string, buys: TradeRow[], tokens: TokenModel, metadata?: TokenMetadata): boolean {
+  if (NOISE_MINTS.has(tokenMint)) return false;
   if (tokens.isBlacklisted(tokenMint)) return false;
   if (!buys.some((buy) => (buy.amount_usd ?? 0) >= config.convergence.minTradeUsd)) return false;
 

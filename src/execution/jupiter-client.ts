@@ -1,11 +1,11 @@
 import {
-  Connection,
   Keypair,
   PublicKey,
   VersionedTransaction
 } from "@solana/web3.js";
 import { config } from "../config/index.js";
 import { logger } from "../utils/logger.js";
+import { getRpcRouter, type RpcRouter } from "../blockchain/rpc-router.js";
 
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -13,6 +13,11 @@ const USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoS2GPGkdbz5PSx9GP";
 
 const JUPITER_QUOTE_URL = "https://api.jup.ag/swap/v1/quote";
 const JUPITER_SWAP_URL = "https://api.jup.ag/swap/v1/swap";
+const JUPITER_PRICE_URL = "https://api.jup.ag/price/v2";
+const PRICE_BATCH_SIZE = 100;
+const PRICE_BATCH_DELAY_MS = 200;
+const PRICE_429_BASE_DELAY_MS = 2_000;
+const PRICE_429_MAX_RETRIES = 3;
 const QUOTE_MAX_AGE_MS = 3_000;
 const SEND_INTERVAL_MS = 500;
 const CONFIRM_TIMEOUT_MS = 60_000;
@@ -70,15 +75,12 @@ interface JupiterSwapResponse {
 }
 
 export class JupiterClient {
-  private readonly connection: Connection;
+  private readonly router: RpcRouter;
   private readonly wallet: Keypair | null;
   private readonly mintDecimalsCache = new Map<string, number>();
 
   constructor() {
-    const rpcUrl = config.helius.apiKey
-      ? `https://mainnet.helius-rpc.com/?api-key=${config.helius.apiKey}`
-      : "https://api.mainnet-beta.solana.com";
-    this.connection = new Connection(rpcUrl, "confirmed");
+    this.router = getRpcRouter();
     this.wallet =
       config.execution.enabled && config.execution.mode === "live" ? parseWalletKeypair(config.execution.walletPrivate) : null;
   }
@@ -119,6 +121,122 @@ export class JupiterClient {
       logger.warn({ mint, err: error instanceof Error ? error.message : String(error) }, "getPriceUsd: request failed");
       return null;
     }
+  }
+
+  /**
+   * Get a real exit quote: "if I sold all my tokens right now, how much USDC would I get?"
+   * Returns null if quote fails (token dead, pool drained, etc.)
+   */
+  async getExitQuoteUsd(
+    tokenMint: string,
+    amountToken: number,
+    decimals: number
+  ): Promise<{ totalUsd: number; effectivePrice: number; priceImpactPct: number } | null> {
+    if (amountToken <= 0 || decimals < 0) return null;
+
+    const amountLamports = BigInt(Math.floor(amountToken * 10 ** decimals));
+    if (amountLamports < 1n) return null;
+
+    try {
+      const quote = await this.getQuote({
+        inputMint: tokenMint,
+        outputMint: USDC_MINT,
+        amountLamports,
+        slippageBps: 300
+      });
+      const outAmount = Number(quote.outAmount) / 1e6; // USDC = 6 decimals
+      if (!Number.isFinite(outAmount) || outAmount <= 0) return null;
+      return {
+        totalUsd: outAmount,
+        effectivePrice: outAmount / amountToken,
+        priceImpactPct: Number(quote.priceImpactPct ?? 0)
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Batch-fetch USD prices for multiple mints in one call using Jupiter Price
+   * API v2. Chunks into batches of PRICE_BATCH_SIZE with delays between them.
+   * Returns a Map<mint, price>. Mints that fail resolve to null.
+   */
+  async getPricesUsdBatch(mints: string[]): Promise<Map<string, number | null>> {
+    const result = new Map<string, number | null>();
+    if (mints.length === 0) return result;
+
+    // Dedupe and handle known stablecoins locally
+    const unique = [...new Set(mints)];
+    const toFetch: string[] = [];
+    for (const mint of unique) {
+      if (mint === USDC_MINT) {
+        result.set(mint, 1);
+      } else {
+        toFetch.push(mint);
+      }
+    }
+
+    // Process in batches
+    for (let i = 0; i < toFetch.length; i += PRICE_BATCH_SIZE) {
+      const batch = toFetch.slice(i, i + PRICE_BATCH_SIZE);
+      const ids = batch.join(",");
+      let fetched = false;
+
+      for (let attempt = 0; attempt <= PRICE_429_MAX_RETRIES; attempt++) {
+        try {
+          const url = `${JUPITER_PRICE_URL}?ids=${ids}&vsToken=${USDC_MINT}`;
+          const response = await fetch(url);
+
+          if (response.status === 429) {
+            const delay = PRICE_429_BASE_DELAY_MS * 2 ** attempt;
+            logger.warn({ attempt, delay, batchSize: batch.length }, "Jupiter Price API 429 — backing off");
+            await sleep(delay);
+            continue;
+          }
+
+          if (!response.ok) {
+            logger.warn({ status: response.status, batchSize: batch.length }, "Jupiter batch price request failed");
+            for (const mint of batch) result.set(mint, null);
+            fetched = true;
+            break;
+          }
+
+          const body = (await response.json()) as { data?: Record<string, { price?: string | number }> };
+          const data = body.data ?? {};
+          for (const mint of batch) {
+            const entry = data[mint];
+            const raw = entry?.price;
+            const price = typeof raw === "string" ? Number(raw) : typeof raw === "number" ? raw : NaN;
+            if (Number.isFinite(price) && isSanePrice(price)) {
+              result.set(mint, price);
+            } else {
+              result.set(mint, null);
+            }
+          }
+          fetched = true;
+          break;
+        } catch (error) {
+          if (attempt === PRICE_429_MAX_RETRIES) {
+            logger.warn({ err: error instanceof Error ? error.message : String(error), batchSize: batch.length }, "Jupiter batch price: all retries failed");
+            for (const mint of batch) result.set(mint, null);
+            fetched = true;
+          } else {
+            await sleep(PRICE_429_BASE_DELAY_MS * 2 ** attempt);
+          }
+        }
+      }
+
+      if (!fetched) {
+        for (const mint of batch) result.set(mint, null);
+      }
+
+      // Delay between batches to avoid hammering
+      if (i + PRICE_BATCH_SIZE < toFetch.length) {
+        await sleep(PRICE_BATCH_DELAY_MS);
+      }
+    }
+
+    return result;
   }
 
   async getQuote(params: SwapParams): Promise<JupiterQuote> {
@@ -305,7 +423,7 @@ export class JupiterClient {
   private async waitForConfirmation(signature: string): Promise<void> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < CONFIRM_TIMEOUT_MS) {
-      const status = await this.connection.getSignatureStatuses([signature]);
+      const status = await this.router.call("getSignatureStatuses", (c) => c.getSignatureStatuses([signature]));
       const value = status.value[0];
       if (value?.err) throw new Error(`Swap failed on-chain: ${JSON.stringify(value.err)}`);
       if (value?.confirmationStatus === "confirmed" || value?.confirmationStatus === "finalized") return;
@@ -316,8 +434,11 @@ export class JupiterClient {
 
   private async tokenBalance(mint: string): Promise<number> {
     if (!this.wallet) return 0;
-    if (mint === SOL_MINT) return this.connection.getBalance(this.wallet.publicKey);
-    const accounts = await this.connection.getParsedTokenAccountsByOwner(this.wallet.publicKey, { mint: new PublicKey(mint) });
+    const pubkey = this.wallet.publicKey;
+    if (mint === SOL_MINT) return this.router.call("getBalance", (c) => c.getBalance(pubkey));
+    const accounts = await this.router.call("getParsedTokenAccountsByOwner", (c) =>
+      c.getParsedTokenAccountsByOwner(pubkey, { mint: new PublicKey(mint) })
+    );
     return accounts.value.reduce((sum, account) => {
       const info = account.account.data.parsed.info as { tokenAmount?: { amount?: string } };
       return sum + Number(info.tokenAmount?.amount ?? 0);
@@ -325,7 +446,7 @@ export class JupiterClient {
   }
 
   private async assertNetworkHealthy(): Promise<void> {
-    const samples = await this.connection.getRecentPerformanceSamples(1);
+    const samples = await this.router.call("getRecentPerformanceSamples", (c) => c.getRecentPerformanceSamples(1));
     const sample = samples[0];
     if (!sample) return;
     const tps = sample.numTransactions / sample.samplePeriodSecs;
@@ -364,7 +485,8 @@ export class JupiterClient {
     const cached = this.mintDecimalsCache.get(mint);
     if (cached !== undefined) return cached;
 
-    const account = await this.connection.getAccountInfo(new PublicKey(mint));
+    const mintKey = new PublicKey(mint);
+    const account = await this.router.call("getAccountInfo", (c) => c.getAccountInfo(mintKey));
     const decimals = account?.data[44];
     if (decimals === undefined) {
       logger.warn({ mint }, "Token mint decimals unavailable; defaulting to 9");

@@ -12,7 +12,8 @@
     "test": "vitest run",
     "setup:webhooks": "tsx scripts/setup-webhooks.ts",
     "backfill": "tsx scripts/backfill.ts",
-    "add-wallet": "tsx scripts/add-wallet.ts"
+    "add-wallet": "tsx scripts/add-wallet.ts",
+    "refresh-pool": "tsx scripts/refresh-pool.ts"
   },
   "keywords": [
     "solana",

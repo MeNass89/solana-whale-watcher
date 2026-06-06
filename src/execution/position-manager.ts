@@ -67,15 +67,18 @@ export class PositionManager {
   private db: AppDatabase | null = null;
   private wallets: WalletModel | null = null;
   private priceClient: JupiterClient = jupiterClient;
+  private jupiterClient: JupiterClient = jupiterClient;
   private exitHandler: ExitHandler | null = null;
   private timer: NodeJS.Timeout | null = null;
   private checking = false;
   private nullPriceCounts = new Map<number, number>();
+  private exitQuoteCache = new Map<number, { effectivePrice: number; at: number }>();
 
-  configure(input: { db: AppDatabase; wallets?: WalletModel; priceClient?: JupiterClient; exitHandler?: ExitHandler }): void {
+  configure(input: { db: AppDatabase; wallets?: WalletModel; priceClient?: JupiterClient; jupiterClient?: JupiterClient; exitHandler?: ExitHandler }): void {
     this.db = input.db;
     this.wallets = input.wallets ?? null;
     this.priceClient = input.priceClient ?? jupiterClient;
+    this.jupiterClient = input.jupiterClient ?? input.priceClient ?? jupiterClient;
     this.exitHandler = input.exitHandler ?? null;
   }
 
@@ -183,7 +186,27 @@ export class PositionManager {
           continue;
         }
         this.nullPriceCounts.delete(position.id);
-        await this.onPriceUpdate(position, price);
+
+        const cached = this.exitQuoteCache.get(position.id);
+        const now = Date.now();
+        let displayPrice = price; // default to spot
+
+        if (!cached || now - cached.at > 120_000) {
+          const decimals = this.tokenDecimals(position.token_mint);
+          const exitQuote = await this.jupiterClient.getExitQuoteUsd(
+            position.token_mint,
+            position.amount_token,
+            decimals
+          );
+          if (exitQuote) {
+            displayPrice = exitQuote.effectivePrice;
+            this.exitQuoteCache.set(position.id, { effectivePrice: displayPrice, at: now });
+          }
+        } else {
+          displayPrice = cached.effectivePrice;
+        }
+
+        await this.onPriceUpdate(position, price, displayPrice);
       }
     } finally {
       this.checking = false;
@@ -226,9 +249,17 @@ export class PositionManager {
   }
 
   markExit(position: PositionRow, remainingAmount: number, priceUsd: number, reason: string): void {
-    const status = remainingAmount > 0 ? "PARTIAL" : "CLOSED";
-    const pnlUsd = remainingAmount > 0 ? null : position.amount_token * (priceUsd - position.entry_price_usd);
-    const pnlPct = remainingAmount > 0 ? null : ((priceUsd - position.entry_price_usd) / position.entry_price_usd) * 100;
+    // Dust floor: float arithmetic + bigint round-trips leave sub-cent residues
+    // that loop in PARTIAL forever. Anything worth <$0.01 (or below 1e-9 token
+    // when price is unknown) is treated as fully closed.
+    const referencePrice = priceUsd > 0 ? priceUsd : position.entry_price_usd;
+    const remainingUsd = remainingAmount * referencePrice;
+    const isDust = remainingAmount <= 1e-9 || (referencePrice > 0 && remainingUsd < 0.01);
+    const effectiveRemaining = isDust ? 0 : remainingAmount;
+    const status = effectiveRemaining > 0 ? "PARTIAL" : "CLOSED";
+    const closing = status === "CLOSED";
+    const pnlUsd = closing ? position.amount_token * (priceUsd - position.entry_price_usd) : null;
+    const pnlPct = closing ? ((priceUsd - position.entry_price_usd) / position.entry_price_usd) * 100 : null;
     this.requireDb()
       .prepare(
         `UPDATE positions
@@ -237,10 +268,10 @@ export class PositionManager {
              closed_at = CASE WHEN ? = 'CLOSED' THEN ? ELSE closed_at END
          WHERE id = ?`
       )
-      .run(remainingAmount, priceUsd, status, reason, pnlUsd, pnlPct, status, unixNow(), position.id);
+      .run(effectiveRemaining, priceUsd, status, reason, pnlUsd, pnlPct, status, unixNow(), position.id);
   }
 
-  private async onPriceUpdate(position: PositionRow, priceUsd: number): Promise<void> {
+  private async onPriceUpdate(position: PositionRow, priceUsd: number, displayPriceUsd = priceUsd): Promise<void> {
     const now = unixNow();
 
     if (await this.checkDollarStop(position, priceUsd)) return;
@@ -249,7 +280,7 @@ export class PositionManager {
     const profitPct = ((priceUsd - position.entry_price_usd) / position.entry_price_usd) * 100;
     const trailingActive = position.trailing_stop_active === 1 || profitPct >= TRAILING_ACTIVATION_PCT;
     const trailingPct = profitPct >= TRAIL_TIGHTEN_PROFIT_PCT ? TRAIL_TIGHT_PCT : TRAIL_DEFAULT_PCT;
-    this.updatePriceState(position.id, priceUsd, peak, trailingActive, trailingPct);
+    this.updatePriceState(position.id, displayPriceUsd, peak, trailingActive, trailingPct);
 
     const pendingBehavioralExitAt = this.numberConfig(`position:${position.id}:pending_behavioral_exit_at`);
     if (pendingBehavioralExitAt && pendingBehavioralExitAt <= now) {
@@ -400,6 +431,11 @@ export class PositionManager {
 
   private deleteConfig(key: string): void {
     this.requireDb().prepare("DELETE FROM execution_config WHERE key = ?").run(key);
+  }
+
+  private tokenDecimals(mint: string): number {
+    const row = this.requireDb().prepare("SELECT decimals FROM tokens WHERE mint = ?").get(mint) as { decimals: number } | undefined;
+    return row?.decimals ?? 9; // default SOL-like
   }
 
   private requireDb(): AppDatabase {

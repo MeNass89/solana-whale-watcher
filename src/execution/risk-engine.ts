@@ -17,6 +17,7 @@ export interface RiskCheck {
   allowed: boolean;
   reason?: string;
   adjustedSizePct?: number;
+  liquidityCapApplied?: boolean;
   phase?: RiskPhase;
   portfolioValueUsd?: number;
   sizeUsd?: number;
@@ -37,7 +38,7 @@ const PHASE_LIMITS: Record<RiskPhase, PhaseLimits> = {
   mature: { cap: 5, maxExposure: 60, maxPositions: 15 }
 };
 
-const MAX_POSITION_POOL_TVL_PCT = 0.5;
+const MAX_POSITION_LIQUIDITY_PCT = 5;   // never buy more than 5% of pool TVL
 const TVL_HARD_FLOOR_USD = 5_000;
 const TVL_SMALL_BRACKET_USD = 25_000;
 const TVL_MEDIUM_BRACKET_USD = 100_000;
@@ -59,6 +60,11 @@ const MIRROR_MIN_PCT = 0.3;
 const MIRROR_MAX_PCT = 5.0;
 const MIRROR_FALLBACK_PCT = 1.0;
 const MAX_REASONABLE_VOL_PCT = 300;
+// Cold-start fallback: when a token has no volatility history yet but has
+// passed the TVL hard floor, treat it as high-volatility (150%). That gives
+// volAdj = 50/150 = 0.33, which combined with the MIRROR_MIN_PCT floor ends
+// up as a conservative ~0.3% portfolio position — not "no entry at all".
+const VOLATILITY_COLD_START_FALLBACK_PCT = 150;
 
 function isTransientProviderError(error: unknown): boolean {
   return (
@@ -98,15 +104,27 @@ export class RiskEngine {
       : liquidityUsd < TVL_MEDIUM_BRACKET_USD ? TVL_MEDIUM_CAP_PCT
       : limits.cap;
 
-    const volatility = this.numberConfig(`token:${convergence.token_mint}:realized_vol_24h_pct`);
-    // Hard-fail when volatility is unknown or outsized: skip the trade rather
-    // than apply MIRROR_MIN_PCT to an opaque-risk position.
-    if (volatility === null || volatility <= 0 || volatility > MAX_REASONABLE_VOL_PCT) {
+    const rawVolatility = this.numberConfig(`token:${convergence.token_mint}:realized_vol_24h_pct`);
+    // Outsized volatility (>300%) still hard-fails — that's a token bouncing
+    // 3x intraday and not size-able. But unknown volatility on a token that
+    // already cleared the TVL hard floor now uses a conservative fallback
+    // instead of an outright reject, so cold-start convergences on freshly
+    // ingested established tokens can still trade at minimum size.
+    if (rawVolatility !== null && rawVolatility > MAX_REASONABLE_VOL_PCT) {
       logger.warn(
-        { mint: convergence.token_mint, volatility },
-        "risk-engine: volatility unknown or outsized; refusing entry"
+        { mint: convergence.token_mint, volatility: rawVolatility },
+        "risk-engine: volatility outsized; refusing entry"
       );
-      return { allowed: false, reason: "volatility unknown or outsized", phase, portfolioValueUsd };
+      return { allowed: false, reason: "volatility outsized", phase, portfolioValueUsd };
+    }
+    const volatility = rawVolatility !== null && rawVolatility > 0
+      ? rawVolatility
+      : VOLATILITY_COLD_START_FALLBACK_PCT;
+    if (rawVolatility === null || rawVolatility <= 0) {
+      logger.info(
+        { mint: convergence.token_mint, fallback: VOLATILITY_COLD_START_FALLBACK_PCT },
+        "risk-engine: volatility unknown, using cold-start fallback"
+      );
     }
     const mirrorPct = await this.computeMirrorSizePct(trades, portfolioValueUsd);
     const volAdj = Math.min(1, 50 / volatility);
@@ -119,11 +137,16 @@ export class RiskEngine {
     // the executable size, not an uncapped theoretical one.
     const sizeUsd = (portfolioValueUsd * adjustedSizePct) / 100;
     const hardCapUsd = Math.min(portfolioValueUsd * MAX_POSITION_PORTFOLIO_PCT / 100, MAX_POSITION_USD);
-    const finalSizeUsd = Math.min(sizeUsd, hardCapUsd);
-    const finalSizePct = (finalSizeUsd / portfolioValueUsd) * 100;
+    let finalSizeUsd = Math.min(sizeUsd, hardCapUsd);
+    let finalSizePct = (finalSizeUsd / portfolioValueUsd) * 100;
+    let liquidityCapApplied = false;
 
-    if ((finalSizeUsd / liquidityUsd) * 100 > MAX_POSITION_POOL_TVL_PCT) {
-      return { allowed: false, reason: "position exceeds 0.5% of pool TVL", phase, portfolioValueUsd };
+    // Cap position to MAX_POSITION_LIQUIDITY_PCT of pool TVL
+    const maxLiquiditySizeUsd = (liquidityUsd * MAX_POSITION_LIQUIDITY_PCT) / 100;
+    if (finalSizeUsd > maxLiquiditySizeUsd) {
+      finalSizeUsd = maxLiquiditySizeUsd;
+      finalSizePct = (finalSizeUsd / portfolioValueUsd) * 100;
+      liquidityCapApplied = true;
     }
 
     const honeypotLoss = this.numberConfig(`token:${convergence.token_mint}:honeypot_roundtrip_loss_pct`);
@@ -165,7 +188,15 @@ export class RiskEngine {
       return { allowed: false, reason: "SOL reserve below 5 SOL", phase, portfolioValueUsd };
     }
 
-    return { allowed: true, adjustedSizePct: finalSizePct, phase, portfolioValueUsd, sizeUsd: finalSizeUsd, liquidityUsd };
+    return {
+      allowed: true,
+      adjustedSizePct: finalSizePct,
+      ...(liquidityCapApplied ? { liquidityCapApplied: true } : {}),
+      phase,
+      portfolioValueUsd,
+      sizeUsd: finalSizeUsd,
+      liquidityUsd
+    };
   }
 
   private async computeMirrorSizePct(trades: TradeRow[], portfolioValueUsd: number): Promise<number> {

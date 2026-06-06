@@ -1,7 +1,11 @@
 import type { HeliusClient } from "../blockchain/helius-client.js";
+import { HeliusRequestError } from "../blockchain/helius-client.js";
 import type { WalletModel } from "../storage/models/wallets.js";
 import type { DiscordAlerter } from "../alerts/discord.js";
 import { logger } from "../utils/logger.js";
+
+const WEBHOOK_HEALTH_429_MAX_RETRIES = 3;
+const WEBHOOK_HEALTH_429_BASE_DELAY_MS = 5_000;
 
 export async function checkWebhookHealth(
   helius: HeliusClient,
@@ -17,7 +21,7 @@ export async function checkWebhookHealth(
 
   let webhook: Awaited<ReturnType<HeliusClient["getWebhook"]>>;
   try {
-    webhook = await helius.getWebhook(webhookId);
+    webhook = await getWebhookWithRetry(helius, webhookId);
   } catch (error) {
     logger.error(
       { err: error instanceof Error ? error : new Error(String(error)), webhookId },
@@ -83,4 +87,32 @@ function isDisabled(webhook: { webhookType?: string } & Record<string, unknown>)
   const enabled = webhook["enabled"];
   if (enabled === false) return true;
   return false;
+}
+
+/**
+ * Retry getWebhook with exponential backoff on 429 (rate limit).
+ * Other errors propagate immediately.
+ */
+async function getWebhookWithRetry(
+  helius: HeliusClient,
+  webhookId: string
+): Promise<Awaited<ReturnType<HeliusClient["getWebhook"]>>> {
+  for (let attempt = 0; attempt <= WEBHOOK_HEALTH_429_MAX_RETRIES; attempt++) {
+    try {
+      return await helius.getWebhook(webhookId);
+    } catch (error) {
+      const is429 =
+        error instanceof HeliusRequestError && error.status === 429;
+      if (!is429 || attempt === WEBHOOK_HEALTH_429_MAX_RETRIES) throw error;
+
+      const delay = WEBHOOK_HEALTH_429_BASE_DELAY_MS * 2 ** attempt;
+      logger.warn(
+        { attempt, delay, webhookId },
+        "webhook-health: getWebhook 429 — backing off"
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  // Unreachable, but satisfies TS
+  return null;
 }

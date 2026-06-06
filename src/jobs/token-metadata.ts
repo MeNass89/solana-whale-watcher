@@ -77,7 +77,12 @@ async function fetchDexScreener(mints: string[]): Promise<Map<string, DexScreene
   return result;
 }
 
+const DAS_CACHE_TTL_SEC = 7 * 24 * 60 * 60;
+
 async function refreshHelius(db: AppDatabase, helius: HeliusClient, mint: string): Promise<void> {
+  const cachedAt = readConfigNumber(db, `token:${mint}:das_cached_at`);
+  if (cachedAt && unixNow() - cachedAt < DAS_CACHE_TTL_SEC) return;
+
   const asset = (await helius.getAsset(mint)) as Record<string, unknown> | null;
   if (!asset) return;
 
@@ -90,6 +95,15 @@ async function refreshHelius(db: AppDatabase, helius: HeliusClient, mint: string
     const ageHours = Math.max(0, (unixNow() - createdAt) / 3600);
     setConfig(db, `token:${mint}:age_hours`, ageHours.toFixed(1));
   }
+
+  setConfig(db, `token:${mint}:das_cached_at`, String(unixNow()));
+}
+
+function readConfigNumber(db: AppDatabase, key: string): number | null {
+  const row = db.prepare("SELECT value FROM execution_config WHERE key = ?").get(key) as { value: string } | undefined;
+  if (!row) return null;
+  const n = Number(row.value);
+  return Number.isFinite(n) ? n : null;
 }
 
 function activeTokenMints(db: AppDatabase): string[] {

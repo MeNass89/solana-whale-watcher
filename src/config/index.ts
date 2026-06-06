@@ -21,6 +21,8 @@ loadDotEnv();
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HELIUS_API_KEY: z.string().default(""),
+  ALCHEMY_API_KEY: z.string().default(""),
+  CHAINSTACK_RPC_URL: z.string().default(""),
   BIRDEYE_API_KEY: z.string().default(""),
   HELIUS_WEBHOOK_SECRET: z.string().min(1).default("dev-webhook-secret"),
   HELIUS_WEBHOOK_ID: z.string().optional().default(""),
@@ -57,6 +59,9 @@ if (env.NODE_ENV === "production") {
   if (env.EXECUTION_ENABLED && env.EXECUTION_MODE === "live" && (!env.SOLANA_WALLET_PUBLIC || !env.SOLANA_WALLET_PRIVATE)) {
     throw new Error("SOLANA_WALLET_PUBLIC and SOLANA_WALLET_PRIVATE must be set for live execution");
   }
+  if (!env.ALCHEMY_API_KEY || !env.CHAINSTACK_RPC_URL) {
+    throw new Error("ALCHEMY_API_KEY and CHAINSTACK_RPC_URL must be set in production");
+  }
   // BIRDEYE_API_KEY is intentionally NOT required in prod: every BirdEye client
   // method (getSolUsdAt, getTokenOverview, getWalletPnl, getHistoricalPrices)
   // checks `if (!this.apiKey)` and degrades to null/cached values. The risk
@@ -69,6 +74,10 @@ export const config = {
     apiKey: env.HELIUS_API_KEY,
     webhookSecret: env.HELIUS_WEBHOOK_SECRET,
     webhookId: env.HELIUS_WEBHOOK_ID
+  },
+  rpc: {
+    alchemyApiKey: env.ALCHEMY_API_KEY,
+    chainstackUrl: env.CHAINSTACK_RPC_URL
   },
   birdeye: {
     apiKey: env.BIRDEYE_API_KEY

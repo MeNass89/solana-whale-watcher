@@ -16,6 +16,13 @@ const CRITICAL_MAX_SIGNAL_AGE_SECONDS = 45 * 60;
 const NOTABLE_MAX_SIGNAL_AGE_SECONDS = 90 * 60;
 const NOTABLE_MAX_ADVERSE_MOVE_PCT = 3;
 
+// Pump.fun mints share a "...pump" suffix. We do not trade them: timing is
+// sub-second-sensitive and our pipeline (Helius webhook → 12s NOTABLE delay →
+// Jupiter swap) is too slow to compete with snipers on these tokens.
+function isPumpFunMint(mint: string): boolean {
+  return mint.endsWith("pump");
+}
+
 export class TradeExecutor {
   private db: AppDatabase | null = null;
   private swaps: JupiterClient = jupiterClient;
@@ -40,6 +47,14 @@ export class TradeExecutor {
   async onConvergence(convergence: ConvergenceRow, trades: TradeRow[]): Promise<void> {
     if (!config.execution.enabled) return;
     if (convergence.tier === "WATCH") return;
+
+    if (isPumpFunMint(convergence.token_mint)) {
+      logger.info(
+        { convergenceId: convergence.id, mint: convergence.token_mint, tier: convergence.tier },
+        "execution skipped: pump.fun token (sub-second timing required, out of scope)"
+      );
+      return;
+    }
 
     const existing = this.requireDb()
       .prepare("SELECT id FROM executions WHERE convergence_id = ? AND direction = 'BUY' AND status IN ('PENDING','FILLED')")
@@ -193,8 +208,9 @@ export class TradeExecutor {
     if (total < 1n) {
       logger.info(
         { positionId: current.id, sellAmountToken, decimals },
-        "exit skipped: requested amount rounds to zero base units"
+        "exit closed (dust): requested amount rounds to zero base units"
       );
+      this.positions.markExit(current, 0, priceUsd, `${reason}_DUST_CLOSE`);
       return;
     }
     const amountLamports = total;
