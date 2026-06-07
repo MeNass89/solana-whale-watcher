@@ -25,10 +25,15 @@ export async function runPriceTracker(db: AppDatabase): Promise<void> {
 
   if (rows.length === 0) return;
 
-  // Batch-fetch all prices in one call (uses Jupiter Price API v2 with
-  // built-in batching, inter-batch delays, and exponential backoff on 429).
   const uniqueMints = [...new Set(rows.map((r) => r.token_mint))];
-  const priceMap = await jupiterClient.getPricesUsdBatch(uniqueMints);
+  const priceMap = new Map<string, number | null>();
+  const CHUNK = 5;
+  for (let i = 0; i < uniqueMints.length; i += CHUNK) {
+    const chunk = uniqueMints.slice(i, i + CHUNK);
+    const results = await Promise.all(chunk.map((m) => jupiterClient.getPriceUsd(m)));
+    chunk.forEach((m, j) => priceMap.set(m, results[j]));
+    if (i + CHUNK < uniqueMints.length) await new Promise((r) => setTimeout(r, 200));
+  }
 
   let updated = 0;
 
