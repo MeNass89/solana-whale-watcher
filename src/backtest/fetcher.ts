@@ -33,6 +33,27 @@ export function mergeIntervals(intervals: Interval[]): Interval[] {
   return merged;
 }
 
+/**
+ * Coalesces intervals into request-sized groups: one minute-OHLCV request
+ * returns up to 1000 candles (≈16.6 h), so nearby windows are merged into a
+ * single covering interval as long as the merged span stays ≤ maxSpanSeconds.
+ * Fetching the gap between two windows costs nothing (same request) and cuts
+ * request count from one-per-convergence to one-per-cluster.
+ */
+export function coalesceWindows(intervals: Interval[], maxSpanSeconds: number): Interval[] {
+  const merged = mergeIntervals(intervals);
+  const groups: Interval[] = [];
+  for (const cur of merged) {
+    const last = groups[groups.length - 1];
+    if (last && cur.end - last.start <= maxSpanSeconds) last.end = cur.end;
+    else groups.push({ ...cur });
+  }
+  return groups;
+}
+
+/** One minute-candle request covers 1000 minutes. */
+export const MINUTE_REQUEST_SPAN = 1000 * 60;
+
 function toCandles(bars: OhlcvBar[], tokenMint: string, poolAddress: string, timeframe: Timeframe): Candle[] {
   return bars.map((bar) => ({
     token_mint: tokenMint,
@@ -113,9 +134,11 @@ export async function runFetch(candleDbPath: string, liveDbPath?: string): Promi
           store.setFetchState(mint, null, "no_data");
           noData++;
         } else {
-          // minute windows: [ft − 1h, ft + 2h] per convergence, merged
-          const minuteWindows = mergeIntervals(
-            detectionTimes.map((ft) => ({ start: ft - HOUR, end: ft + 2 * HOUR }))
+          // minute windows: [ft − 1h, ft + 2h] per convergence, coalesced into
+          // request-sized (≤1000-candle) covering intervals
+          const minuteWindows = coalesceWindows(
+            detectionTimes.map((ft) => ({ start: ft - HOUR, end: ft + 2 * HOUR })),
+            MINUTE_REQUEST_SPAN
           );
           const allMinute: Candle[] = [];
           for (const win of minuteWindows) {
