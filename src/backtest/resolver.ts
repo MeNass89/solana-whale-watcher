@@ -4,8 +4,9 @@
  * candles.
  *
  * Rules (documented in README):
- *  - baseline = price_at_detection if > 0, else minute-candle close nearest
- *    first_trade_at (±10 min);
+ *  - baseline = minute-candle close nearest first_trade_at (±10 min), hourly
+ *    fallback (±30 min); the stored price_at_detection is IGNORED — for
+ *    backlogged rows it was stamped hours/days after detection;
  *  - price_1h  = minute close nearest first_trade_at+1h  (±10 min);
  *  - price_24h = hourly close nearest first_trade_at+24h (±2 h);
  *  - price_7d  = hourly close nearest first_trade_at+7d  (±6 h);
@@ -69,10 +70,15 @@ export function resolveRow(row: ConvergenceRow, candles: CandleLookup): Resoluti
   if (!candles.hasCandles(row.token_mint)) return noUpdate("DEAD");
 
   const ft = row.first_trade_at;
+  // Baseline MUST come from candles at detection time, never from the stored
+  // price_at_detection: for backlogged rows that value was stamped whenever
+  // the price tracker first processed the row — hours or days after detection,
+  // often post-collapse. Dividing a true candle close by a stale baseline
+  // fabricates phantom ±1000% returns (observed on the first smoke report).
   const baseline =
-    row.price_at_detection !== null && row.price_at_detection > 0
-      ? row.price_at_detection
-      : candles.closestClose(row.token_mint, "minute", ft, TOLERANCE_1H)?.close ?? null;
+    candles.closestClose(row.token_mint, "minute", ft, TOLERANCE_1H)?.close ??
+    candles.closestClose(row.token_mint, "hour", ft, 30 * 60)?.close ??
+    null;
 
   const price1h = candles.closestClose(row.token_mint, "minute", ft + HOUR, TOLERANCE_1H)?.close ?? null;
   const price24h = candles.closestClose(row.token_mint, "hour", ft + DAY, TOLERANCE_24H)?.close ?? null;

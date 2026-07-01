@@ -12,6 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openLiveReadonly } from "./live-db.js";
+import { buildHorizonStudy } from "./horizon-study.js";
 import { mean, median, winRate, winsorizedMean } from "./stats.js";
 import type { ConfigResult, ReplayOutput } from "./replay.js";
 
@@ -193,6 +194,7 @@ export function runReport(options: { liveDbPath?: string } = {}): string {
   );
   parts.push("");
   parts.push(buildSignalStudy(options.liveDbPath));
+  parts.push(buildHorizonStudy(undefined, options.liveDbPath));
   parts.push(buildReplaySection());
 
   const report = parts.join("\n");

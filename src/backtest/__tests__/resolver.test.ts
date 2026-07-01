@@ -51,7 +51,7 @@ describe("resolveRow", () => {
     expect(resolveRow(row(), store).outcome).toBe("DEAD");
   });
 
-  it("resolves baseline from detection price when > 0, else nearest minute close", () => {
+  it("resolves baseline from candles at detection, IGNORING the stored price_at_detection", () => {
     store.upsertCandles([
       candle(FT + 120, 2.0, "minute"), // baseline candidate, 2 min after ft
       candle(FT + HOUR, 2.2, "minute"),
@@ -62,9 +62,21 @@ describe("resolveRow", () => {
     expect(fromCandles.price_at_detection).toBe(2.0);
     expect(fromCandles.outcome).toBe("WIN"); // 2.5/2.0 = +25%
 
-    const fromLive = resolveRow(row({ price_at_detection: 2.5 }), store);
-    expect(fromLive.price_at_detection).toBe(2.5);
-    expect(fromLive.outcome).toBe("FLAT"); // 2.5/2.5 = 0%
+    // Stored price stamped late (post-collapse) must NOT poison the baseline:
+    // same candle baseline, same outcome, stored value overwritten.
+    const staleStored = resolveRow(row({ price_at_detection: 0.002 }), store);
+    expect(staleStored.price_at_detection).toBe(2.0);
+    expect(staleStored.outcome).toBe("WIN");
+  });
+
+  it("falls back to an hourly baseline (±30 min) when no minute candle is near detection", () => {
+    store.upsertCandles([
+      candle(FT + 20 * 60, 2.0, "hour"), // within ±30 min hourly fallback
+      candle(FT + 7 * DAY, 2.5, "hour")
+    ]);
+    const res = resolveRow(row(), store);
+    expect(res.price_at_detection).toBe(2.0);
+    expect(res.outcome).toBe("WIN");
   });
 
   it("respects tolerances: nearest within window, NULL outside", () => {

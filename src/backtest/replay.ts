@@ -81,14 +81,17 @@ export function defaultDetectionGrid(): DetectionParams[] {
 
 export function defaultExitGrid(): ExitRule[] {
   const grid: ExitRule[] = [];
+  // Memecoin whale plays resolve in minutes-to-hours: sub-hour holds must be
+  // in the grid or the search space excludes the most plausible regime.
   for (const takeProfitPct of [0.2, 0.5, 1.0]) {
     for (const stopLossPct of [0.15, 0.3]) {
-      for (const maxHoldSeconds of [1 * HOUR, 6 * HOUR, 24 * HOUR]) {
+      for (const maxHoldSeconds of [900, 1800, 1 * HOUR, 2 * HOUR, 6 * HOUR, 24 * HOUR]) {
+        const holdLabel = maxHoldSeconds < HOUR ? `${maxHoldSeconds / 60}m` : `${maxHoldSeconds / HOUR}h`;
         grid.push({
           takeProfitPct,
           stopLossPct,
           maxHoldSeconds,
-          label: `TP+${takeProfitPct * 100}%/SL-${stopLossPct * 100}%/${maxHoldSeconds / HOUR}h`
+          label: `TP+${takeProfitPct * 100}%/SL-${stopLossPct * 100}%/${holdLabel}`
         });
       }
     }
