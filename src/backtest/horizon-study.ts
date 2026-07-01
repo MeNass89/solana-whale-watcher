@@ -1,5 +1,5 @@
 /**
- * Horizon curve — forward returns at fine-grained horizons (5m → 7d) computed
+ * Horizon curve — forward returns at fine-grained horizons (1m → 12h) computed
  * directly from candles, NOT from the coarse price_1h/24h/7d columns.
  *
  * Rationale: whale plays on memecoins resolve in minutes-to-hours; judging the
@@ -20,18 +20,22 @@ interface Horizon {
   toleranceSeconds: number;
 }
 
+// Nothing beyond 12h: memecoin whale plays resolve in minutes, the long tail
+// is pure decay (measured: win rate 0% at 12-24h). 1m is the data floor —
+// GeckoTerminal's finest candle is 1 minute, so 30s horizons are unmeasurable,
+// and our own entry latency (~60s) makes them untradeable anyway.
 export const HORIZONS: Horizon[] = [
+  { label: "1m", seconds: 60, timeframe: "minute", toleranceSeconds: 45 },
+  { label: "2m", seconds: 120, timeframe: "minute", toleranceSeconds: 60 },
   { label: "5m", seconds: 300, timeframe: "minute", toleranceSeconds: 120 },
+  { label: "10m", seconds: 600, timeframe: "minute", toleranceSeconds: 180 },
   { label: "15m", seconds: 900, timeframe: "minute", toleranceSeconds: 180 },
   { label: "30m", seconds: 1800, timeframe: "minute", toleranceSeconds: 300 },
   { label: "1h", seconds: 3600, timeframe: "minute", toleranceSeconds: 600 },
   { label: "2h", seconds: 7200, timeframe: "minute", toleranceSeconds: 600 },
   { label: "4h", seconds: 4 * 3600, timeframe: "hour", toleranceSeconds: 3600 },
   { label: "8h", seconds: 8 * 3600, timeframe: "hour", toleranceSeconds: 3600 },
-  { label: "12h", seconds: 12 * 3600, timeframe: "hour", toleranceSeconds: 5400 },
-  { label: "24h", seconds: 24 * 3600, timeframe: "hour", toleranceSeconds: 7200 },
-  { label: "48h", seconds: 48 * 3600, timeframe: "hour", toleranceSeconds: 7200 },
-  { label: "7d", seconds: 7 * 24 * 3600, timeframe: "hour", toleranceSeconds: 21600 }
+  { label: "12h", seconds: 12 * 3600, timeframe: "hour", toleranceSeconds: 5400 }
 ];
 
 interface CurveRow {
@@ -112,7 +116,7 @@ export function buildHorizonStudy(candleDbPath = DEFAULT_CANDLE_DB, liveDbPath?:
   store.close();
 
   const lines: string[] = [];
-  lines.push(`## Horizon curve — candle-based forward returns, 5m → 7d`);
+  lines.push(`## Horizon curve — candle-based forward returns, 1m → 12h`);
   lines.push("");
   lines.push(
     `Baseline = candle close at detection time (stored price_at_detection is NOT used — ` +

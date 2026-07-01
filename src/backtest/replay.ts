@@ -81,11 +81,12 @@ export function defaultDetectionGrid(): DetectionParams[] {
 
 export function defaultExitGrid(): ExitRule[] {
   const grid: ExitRule[] = [];
-  // Memecoin whale plays resolve in minutes-to-hours: sub-hour holds must be
-  // in the grid or the search space excludes the most plausible regime.
+  // Memecoin whale plays resolve in minutes: the horizon curve shows returns
+  // peaking at ~15m and win rate hitting 0% past 12h, so nothing beyond 12h
+  // belongs in the grid. 5m is the shortest hold walkable on minute candles.
   for (const takeProfitPct of [0.2, 0.5, 1.0]) {
     for (const stopLossPct of [0.15, 0.3]) {
-      for (const maxHoldSeconds of [900, 1800, 1 * HOUR, 2 * HOUR, 6 * HOUR, 24 * HOUR]) {
+      for (const maxHoldSeconds of [300, 900, 1800, 1 * HOUR, 2 * HOUR, 6 * HOUR, 12 * HOUR]) {
         const holdLabel = maxHoldSeconds < HOUR ? `${maxHoldSeconds / 60}m` : `${maxHoldSeconds / HOUR}h`;
         grid.push({
           takeProfitPct,

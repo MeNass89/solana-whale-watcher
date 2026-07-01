@@ -1,6 +1,6 @@
 # Whale-convergence alpha report
 
-Generated 2026-07-01T22:03:36.994Z by `src/backtest` harness (branch alpha-harness).
+Generated 2026-07-01T22:11:02.023Z by `src/backtest` harness (branch alpha-harness).
 Modeling assumptions (slippage, SOL/USD approximation, candle tolerances, no shorting) are documented in src/backtest/README.md.
 
 ## Signal study — forward returns by wallet_count × pump × tier
@@ -23,47 +23,50 @@ Returns in %, relative to price_at_detection. "wmean" = winsorized mean (1%/99%)
 - 3+ wallets (all): mean 24h = **-26.32%** (wmean -26.30%, n=102)
 - Interpretation: no shorting is possible on these pools, so a negative heavy-convergence signal is a **filter/avoid** rule, not a tradeable fade.
 
-## Horizon curve — candle-based forward returns, 5m → 7d
+## Horizon curve — candle-based forward returns, 1m → 12h
 
-Baseline = candle close at detection time (stored price_at_detection is NOT used — it was stamped late for backlogged rows). **548** of 16759 convergences have candle coverage. med = median %, wm = winsorized mean % (1/99), wr = share > 0.
+Baseline = candle close at detection time (stored price_at_detection is NOT used — it was stamped late for backlogged rows). **642** of 16760 convergences have candle coverage. med = median %, wm = winsorized mean % (1/99), wr = share > 0.
 
 ### 2 wallets, non-pump
 
 | horizon | n | med % | wm % | wr |
 |---|---|---|---|---|
-| 5m | 120 | 28.0 | 12.9 | 76% |
+| 1m | 121 | 9.4 | -4.7 | 67% |
+| 2m | 124 | 3.4 | -3.9 | 52% |
+| 5m | 121 | 28.0 | 12.7 | 75% |
+| 10m | 123 | 57.3 | 51.1 | 76% |
 | 15m | 104 | 110.9 | 79.6 | 79% |
-| 30m | 106 | 71.4 | 133.9 | 77% |
+| 30m | 107 | 71.4 | 132.5 | 77% |
 | 1h | 108 | 59.3 | 97.0 | 59% |
 | 2h | 108 | 9.6 | 125.4 | 56% |
-| 4h | 108 | -40.6 | -21.3 | 42% |
+| 4h | 109 | -26.0 | -21.2 | 41% |
 | 8h | 103 | -28.2 | -16.6 | 43% |
 | 12h | 103 | -38.0 | -38.1 | 0% |
-| 24h | 103 | -55.1 | -53.9 | 0% |
-| 48h | 88 | -89.1 | -89.7 | 0% |
-| 7d | 84 | -91.6 | -89.6 | 4% |
 
 ### 2 wallets, pump
 
 | horizon | n | med % | wm % | wr |
 |---|---|---|---|---|
-| 5m | 251 | 12.9 | 25.0 | 63% |
-| 15m | 266 | -5.7 | 0.2 | 36% |
-| 30m | 266 | -22.6 | 23.9 | 43% |
-| 1h | 240 | -13.1 | 132.1 | 48% |
-| 2h | 221 | -24.1 | -26.5 | 30% |
-| 4h | 233 | -51.0 | 112.9 | 23% |
-| 8h | 240 | -71.4 | 18.0 | 22% |
-| 12h | 227 | -67.3 | 5.8 | 30% |
-| 24h | 227 | -64.2 | 21.4 | 35% |
-| 48h | 210 | -83.3 | -39.2 | 18% |
-| 7d | 209 | -85.4 | -76.6 | 4% |
+| 1m | 294 | -0.1 | -2.3 | 44% |
+| 2m | 299 | -0.7 | -4.3 | 45% |
+| 5m | 331 | 5.2 | 13.6 | 56% |
+| 10m | 341 | 0.8 | 0.8 | 50% |
+| 15m | 340 | -6.8 | -6.7 | 35% |
+| 30m | 340 | -21.5 | 12.1 | 42% |
+| 1h | 315 | -12.9 | 93.0 | 43% |
+| 2h | 283 | -17.7 | -28.5 | 30% |
+| 4h | 302 | -51.5 | 77.2 | 24% |
+| 8h | 291 | -68.3 | 7.5 | 20% |
+| 12h | 296 | -67.3 | -7.8 | 26% |
 
 ### 3 wallets, non-pump
 
 | horizon | n | med % | wm % | wr |
 |---|---|---|---|---|
+| 1m | 27 | -4.9 | -34.8 | 41% |
+| 2m | 27 | -3.5 | -36.0 | 44% |
 | 5m | 27 | -13.3 | -32.0 | 48% |
+| 10m | 27 | -23.3 | -29.0 | 41% |
 | 15m | 27 | -18.4 | -25.0 | 41% |
 | 30m | 47 | -37.4 | -24.9 | 19% |
 | 1h | 47 | -27.9 | -30.4 | 17% |
@@ -71,25 +74,22 @@ Baseline = candle close at detection time (stored price_at_detection is NOT used
 | 4h | 47 | -91.3 | -81.5 | 0% |
 | 8h | 36 | -95.7 | -76.1 | 0% |
 | 12h | 36 | -95.1 | -85.6 | 0% |
-| 24h | 36 | -96.6 | -90.0 | 0% |
-| 48h | 36 | -97.7 | -96.1 | 0% |
-| 7d | 16 | -96.0 | -96.3 | 0% |
 
 ### 3 wallets, pump
 
 | horizon | n | med % | wm % | wr |
 |---|---|---|---|---|
-| 5m | 65 | 49.3 | 60.9 | 95% |
-| 15m | 65 | -0.4 | -2.8 | 37% |
-| 30m | 65 | -2.3 | -12.0 | 5% |
-| 1h | 65 | 3.2 | -29.3 | 55% |
-| 2h | 63 | 14.8 | -24.7 | 59% |
-| 4h | 65 | 6.7 | -32.0 | 54% |
-| 8h | 65 | 9.6 | -31.8 | 55% |
-| 12h | 63 | -27.3 | -51.8 | 3% |
-| 24h | 63 | -19.4 | -49.6 | 3% |
-| 48h | 62 | -33.8 | -57.3 | 3% |
-| 7d | 61 | -55.9 | -67.0 | 3% |
+| 1m | 53 | 44.7 | 28.9 | 79% |
+| 2m | 74 | 28.6 | 16.8 | 55% |
+| 5m | 74 | 49.3 | 56.7 | 95% |
+| 10m | 74 | 20.2 | 22.5 | 82% |
+| 15m | 74 | -0.4 | -10.4 | 32% |
+| 30m | 74 | -13.4 | -16.8 | 5% |
+| 1h | 74 | -53.2 | -36.6 | 49% |
+| 2h | 71 | 14.8 | -32.1 | 52% |
+| 4h | 74 | -68.1 | -39.3 | 47% |
+| 8h | 74 | -74.0 | -38.9 | 49% |
+| 12h | 72 | -53.8 | -56.8 | 3% |
 
 ### 4 wallets, non-pump
 
@@ -101,30 +101,31 @@ Baseline = candle close at detection time (stored price_at_detection is NOT used
 | 4h | 3 | -94.4 | -94.4 | 0% |
 | 8h | 3 | -95.7 | -95.7 | 0% |
 | 12h | 3 | -95.1 | -95.1 | 0% |
-| 24h | 3 | -96.6 | -96.6 | 0% |
-| 48h | 3 | -97.7 | -97.7 | 0% |
 
 ### 4 wallets, pump
 
 | horizon | n | med % | wm % | wr |
 |---|---|---|---|---|
-| 5m | 4 | 74.7 | 63.1 | 75% |
-| 15m | 4 | -8.6 | -20.0 | 50% |
-| 30m | 4 | -29.0 | -41.2 | 0% |
-| 1h | 4 | -77.9 | -78.8 | 0% |
-| 2h | 3 | -88.6 | -82.4 | 0% |
-| 4h | 4 | -89.6 | -88.9 | 0% |
-| 8h | 4 | -89.7 | -89.3 | 0% |
-| 12h | 3 | -91.1 | -92.0 | 0% |
-| 24h | 3 | -92.9 | -93.6 | 0% |
-| 48h | 3 | -93.4 | -93.9 | 0% |
-| 7d | 3 | -94.3 | -94.7 | 0% |
+| 1m | 6 | -2.4 | -3.8 | 17% |
+| 2m | 8 | -0.7 | -1.6 | 13% |
+| 5m | 8 | 42.6 | 52.8 | 88% |
+| 10m | 8 | -60.7 | -16.7 | 38% |
+| 15m | 8 | -70.1 | -45.2 | 25% |
+| 30m | 8 | -55.7 | -48.4 | 0% |
+| 1h | 8 | -86.6 | -83.8 | 0% |
+| 2h | 7 | -90.6 | -87.2 | 0% |
+| 4h | 8 | -91.9 | -90.8 | 0% |
+| 8h | 8 | -90.5 | -89.9 | 0% |
+| 12h | 7 | -92.1 | -92.0 | 0% |
 
 ### 5+ wallets, pump
 
 | horizon | n | med % | wm % | wr |
 |---|---|---|---|---|
+| 1m | 22 | 36.8 | 36.8 | 100% |
+| 2m | 22 | 28.6 | 28.6 | 100% |
 | 5m | 22 | 175.9 | 175.9 | 100% |
+| 10m | 22 | 16.4 | 16.4 | 100% |
 | 15m | 22 | -24.9 | -24.9 | 0% |
 | 30m | 22 | -33.6 | -33.6 | 0% |
 | 1h | 22 | -80.6 | -80.6 | 0% |
@@ -132,9 +133,6 @@ Baseline = candle close at detection time (stored price_at_detection is NOT used
 | 4h | 22 | -88.2 | -88.2 | 0% |
 | 8h | 22 | -92.0 | -92.0 | 0% |
 | 12h | 22 | -93.7 | -93.7 | 0% |
-| 24h | 22 | -94.8 | -94.8 | 0% |
-| 48h | 22 | -95.0 | -95.0 | 0% |
-| 7d | 22 | -95.6 | -95.6 | 0% |
 
 ## Replay backtest
 
