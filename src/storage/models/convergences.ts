@@ -115,6 +115,19 @@ export class ConvergenceModel {
     return next;
   }
 
+  /**
+   * Deletes per-convergence execution-attempt counters older than the given
+   * age. They are only meaningful within the retry window (minutes); left
+   * alone they accumulate forever (~20k rows) in execution_config.
+   */
+  purgeStaleExecutionAttempts(olderThanDays = 30): number {
+    const cutoff = unixNow() - olderThanDays * 24 * 60 * 60;
+    const result = this.db
+      .prepare("DELETE FROM execution_config WHERE key LIKE 'convergence:%:execution_attempts' AND updated_at < ?")
+      .run(cutoff);
+    return result.changes;
+  }
+
   pendingExecutionRetries(olderThanSeconds: number, maxAttempts: number): ConvergenceRow[] {
     const cutoff = unixNow() - olderThanSeconds;
     return this.db

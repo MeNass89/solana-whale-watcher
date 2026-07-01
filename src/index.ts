@@ -19,9 +19,10 @@ import { TokenModel } from "./storage/models/tokens.js";
 import { TradeModel } from "./storage/models/trades.js";
 import { WalletModel } from "./storage/models/wallets.js";
 import { logger } from "./utils/logger.js";
-import { positionManager } from "./execution/position-manager.js";
+import { positionManager, type PositionRow } from "./execution/position-manager.js";
 import { riskEngine } from "./execution/risk-engine.js";
 import { tradeExecutor } from "./execution/trade-executor.js";
+import { tokenDecimalsResolver } from "./blockchain/token-decimals.js";
 import { stopRecentTradesCleanup } from "./blockchain/transaction-parser.js";
 import { getRpcRouter } from "./blockchain/rpc-router.js";
 import { RpcUsageLogger } from "./blockchain/rpc-usage-logger.js";
@@ -60,6 +61,7 @@ async function main(): Promise<void> {
   const resolver = new TokenResolver(tokens);
   const engine = new ConvergenceEngine(trades, convergences, wallets, tokens, resolver, db);
   const alerts = new AlertManager(convergences);
+  tokenDecimalsResolver.configure({ db });
   riskEngine.configure(db);
   tradeExecutor.configure({ db, risk: riskEngine, positions: positionManager });
   positionManager.configure({
@@ -67,7 +69,33 @@ async function main(): Promise<void> {
     wallets,
     exitHandler: (position, reason, sellPct, panicExit) => tradeExecutor.exitPosition(position, reason, sellPct, panicExit)
   });
+  // Drawdown breaker honesty: "-20% close all" now actually closes all open
+  // positions through the normal exit path (each exit sends its Discord alert).
+  riskEngine.setCloseAllHandler(async (reason) => {
+    const open = db
+      .prepare("SELECT * FROM positions WHERE status IN ('OPEN','PARTIAL') ORDER BY opened_at ASC")
+      .all() as PositionRow[];
+    logger.warn({ reason, positions: open.length }, "risk-engine: drawdown breaker closing all open positions");
+    for (const position of open) {
+      await tradeExecutor.exitPosition(position, "DRAWDOWN_BREAKER_CLOSE_ALL", 100, true);
+    }
+  });
   if (config.execution.enabled) positionManager.start();
+
+  // Stale PENDING executions (crash between create and fill/fail) block
+  // convergence retries and hold the per-token BUY unique slot: reap at
+  // startup and every 5 minutes.
+  tradeExecutor.reapStalePendingExecutions();
+  setInterval(() => {
+    try { tradeExecutor.reapStalePendingExecutions(); } catch (err) {
+      logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "stale-pending reaper failed");
+    }
+  }, 5 * 60 * 1000);
+
+  // Housekeeping: drop per-convergence execution-attempt counters older than
+  // 30 days (they are only meaningful within the minutes-long retry window).
+  const purgedAttempts = convergences.purgeStaleExecutionAttempts(30);
+  if (purgedAttempts > 0) logger.info({ purgedAttempts }, "purged stale convergence execution-attempt counters");
 
   const helius = new HeliusClient();
   const monitor = new WalletMonitor(wallets);

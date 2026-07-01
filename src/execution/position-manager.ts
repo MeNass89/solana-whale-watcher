@@ -6,6 +6,8 @@ import { logger } from "../utils/logger.js";
 import { unixNow } from "../utils/helpers.js";
 import type { JupiterClient } from "./jupiter-client.js";
 import { isSanePrice, isSanePriceChange, jupiterClient } from "./jupiter-client.js";
+import type { TokenDecimalsResolver } from "../blockchain/token-decimals.js";
+import { tokenDecimalsResolver } from "../blockchain/token-decimals.js";
 import { auditOpenPositions } from "./position-auditor.js";
 
 export interface PositionRow {
@@ -48,7 +50,8 @@ interface TakeProfitLevel {
   executed: boolean;
 }
 
-type ExitHandler = (position: PositionRow, reason: string, sellPct: number, panicExit?: boolean) => Promise<void>;
+/** Resolves to true only when the exit swap actually filled. */
+type ExitHandler = (position: PositionRow, reason: string, sellPct: number, panicExit?: boolean) => Promise<boolean>;
 
 const FIRST_30_MIN_STOP_PCT = -8;
 const HARD_STOP_FLOOR_PCT = -15;
@@ -62,23 +65,26 @@ const TRAIL_TIGHT_PCT = 15;
 const TRAIL_TIGHTEN_PROFIT_PCT = 200;
 const FLAT_MOVE_PCT = 5;
 const MAX_CONSECUTIVE_NULL_PRICES = 5;
+const BEHAVIORAL_SELL_WINDOW_SECONDS = 5 * 60;
 
 export class PositionManager {
   private db: AppDatabase | null = null;
   private wallets: WalletModel | null = null;
   private priceClient: JupiterClient = jupiterClient;
   private jupiterClient: JupiterClient = jupiterClient;
+  private decimals: TokenDecimalsResolver = tokenDecimalsResolver;
   private exitHandler: ExitHandler | null = null;
   private timer: NodeJS.Timeout | null = null;
   private checking = false;
   private nullPriceCounts = new Map<number, number>();
   private exitQuoteCache = new Map<number, { effectivePrice: number; at: number }>();
 
-  configure(input: { db: AppDatabase; wallets?: WalletModel; priceClient?: JupiterClient; jupiterClient?: JupiterClient; exitHandler?: ExitHandler }): void {
+  configure(input: { db: AppDatabase; wallets?: WalletModel; priceClient?: JupiterClient; jupiterClient?: JupiterClient; decimals?: TokenDecimalsResolver; exitHandler?: ExitHandler }): void {
     this.db = input.db;
     this.wallets = input.wallets ?? null;
     this.priceClient = input.priceClient ?? jupiterClient;
     this.jupiterClient = input.jupiterClient ?? input.priceClient ?? jupiterClient;
+    this.decimals = input.decimals ?? tokenDecimalsResolver;
     this.exitHandler = input.exitHandler ?? null;
   }
 
@@ -192,15 +198,19 @@ export class PositionManager {
         let displayPrice = price; // default to spot
 
         if (!cached || now - cached.at > 120_000) {
-          const decimals = this.tokenDecimals(position.token_mint);
-          const exitQuote = await this.jupiterClient.getExitQuoteUsd(
-            position.token_mint,
-            position.amount_token,
-            decimals
-          );
-          if (exitQuote) {
-            displayPrice = exitQuote.effectivePrice;
-            this.exitQuoteCache.set(position.id, { effectivePrice: displayPrice, at: now });
+          // Unknown decimals: skip the exit-quote display refinement rather
+          // than quote against a guessed scale. Spot price remains the display.
+          const decimals = await this.decimals.resolve(position.token_mint).catch(() => null);
+          if (decimals !== null) {
+            const exitQuote = await this.jupiterClient.getExitQuoteUsd(
+              position.token_mint,
+              position.amount_token,
+              decimals
+            );
+            if (exitQuote) {
+              displayPrice = exitQuote.effectivePrice;
+              this.exitQuoteCache.set(position.id, { effectivePrice: displayPrice, at: now });
+            }
           }
         } else {
           displayPrice = cached.effectivePrice;
@@ -227,11 +237,15 @@ export class PositionManager {
     for (const position of positions) {
       const count = this.recordBehavioralSell(position.id, walletAddress);
       if (count >= 2) {
+        // Confirmation: a second distinct whale sold within the window —
+        // exit everything that remains.
         await this.exit(position, "BEHAVIORAL_2_WHALES_SELLING", 100, false);
-        this.deleteConfig(`position:${position.id}:pending_behavioral_exit_at`);
       } else {
+        // Single whale sell trims 50% only. The old unconditional "sell the
+        // rest in 5 minutes" follow-up turned every isolated whale trim into
+        // a full liquidation; the remainder now exits only if a second whale
+        // confirms within the window.
         await this.exit(position, "BEHAVIORAL_WHALE_SELL_20_PCT", 50, false);
-        this.setConfig(`position:${position.id}:pending_behavioral_exit_at`, String(unixNow() + 5 * 60));
       }
     }
   }
@@ -282,13 +296,6 @@ export class PositionManager {
     const trailingPct = profitPct >= TRAIL_TIGHTEN_PROFIT_PCT ? TRAIL_TIGHT_PCT : TRAIL_DEFAULT_PCT;
     this.updatePriceState(position.id, displayPriceUsd, peak, trailingActive, trailingPct);
 
-    const pendingBehavioralExitAt = this.numberConfig(`position:${position.id}:pending_behavioral_exit_at`);
-    if (pendingBehavioralExitAt && pendingBehavioralExitAt <= now) {
-      await this.exit({ ...position, current_price_usd: priceUsd }, "BEHAVIORAL_REMAINING_EXIT", 100, false);
-      this.deleteConfig(`position:${position.id}:pending_behavioral_exit_at`);
-      return;
-    }
-
     if (this.isRugEmergency(position, priceUsd, now)) {
       await this.exit(position, "RUG_EMERGENCY", 100, true);
       return;
@@ -303,8 +310,10 @@ export class PositionManager {
     }
     const tp = this.nextTakeProfit(position, profitPct);
     if (tp) {
-      await this.exit(position, `TAKE_PROFIT_${tp.targetPct}`, tp.sellPct, false);
-      this.markTakeProfitExecuted(position.id, tp.targetPct);
+      // Burn the rung only on a confirmed fill: a failed swap must leave the
+      // ladder intact so the level retries on the next tick.
+      const sold = await this.exit(position, `TAKE_PROFIT_${tp.targetPct}`, tp.sellPct, false);
+      if (sold) this.markTakeProfitExecuted(position.id, tp.targetPct);
       return;
     }
     if (position.time_stop_at && now >= position.time_stop_at && !this.isUptrend(position, peak, priceUsd)) {
@@ -312,9 +321,21 @@ export class PositionManager {
       return;
     }
     if (now - position.opened_at >= 6 * 60 * 60 && Math.abs(profitPct) < FLAT_MOVE_PCT) {
-      const sellPct = now - position.opened_at >= 24 * 60 * 60 ? 100 : 50;
-      await this.exit(position, sellPct === 100 ? "FLAT_24H_EXIT" : "FLAT_6H_EXIT", sellPct, false);
+      if (now - position.opened_at >= 24 * 60 * 60) {
+        await this.exit(position, "FLAT_24H_EXIT", 100, false);
+      } else if (this.stringConfig(this.flatExitKey(position.id)) === null) {
+        // Once-only latch: the 50% flat trim halves the position, which keeps
+        // it flat, which used to re-trigger the trim every 30s tick — a
+        // geometric liquidation by a thousand cuts. The latch persists across
+        // restarts and is set only on a confirmed fill.
+        const sold = await this.exit(position, "FLAT_6H_EXIT", 50, false);
+        if (sold) this.setConfig(this.flatExitKey(position.id), String(now));
+      }
     }
+  }
+
+  private flatExitKey(positionId: number): string {
+    return `position:${positionId}:flat_6h_exit_done`;
   }
 
   private isRugEmergency(position: PositionRow, priceUsd: number, _now: number): boolean {
@@ -350,12 +371,12 @@ export class PositionManager {
     return peak > (position.peak_price_usd ?? position.entry_price_usd) && priceUsd >= peak * 0.9;
   }
 
-  private async exit(position: PositionRow, reason: string, sellPct: number, panicExit: boolean): Promise<void> {
+  private async exit(position: PositionRow, reason: string, sellPct: number, panicExit: boolean): Promise<boolean> {
     if (!this.exitHandler) {
       logger.warn({ positionId: position.id, reason }, "position exit requested before trade executor configured");
-      return;
+      return false;
     }
-    await this.exitHandler(position, reason, sellPct, panicExit);
+    return this.exitHandler(position, reason, sellPct, panicExit);
   }
 
   private updatePriceState(positionId: number, priceUsd: number, peakPriceUsd: number, trailingActive: boolean, trailingPct: number): void {
@@ -397,12 +418,26 @@ export class PositionManager {
       .all() as PositionRow[];
   }
 
+  /**
+   * Records a whale sell against a position and returns the number of
+   * DISTINCT sellers seen within the confirmation window. Timestamps (rather
+   * than a bare set) let stale sellers age out, so two sells hours apart do
+   * not read as a coordinated dump.
+   */
   private recordBehavioralSell(positionId: number, walletAddress: string): number {
     const key = `position:${positionId}:behavioral_sellers`;
-    const existing = JSON.parse(this.stringConfig(key) ?? "[]") as string[];
-    const sellers = [...new Set([...existing, walletAddress])];
+    const now = unixNow();
+    let sellers: Record<string, number> = {};
+    const raw = this.stringConfig(key);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, number> | string[];
+      // Tolerate the legacy bare-array format left by older builds.
+      sellers = Array.isArray(parsed) ? Object.fromEntries(parsed.map((w) => [w, 0])) : parsed;
+    }
+    sellers[walletAddress] = now;
     this.setConfig(key, JSON.stringify(sellers));
-    return sellers.length;
+    const windowStart = now - BEHAVIORAL_SELL_WINDOW_SECONDS;
+    return Object.values(sellers).filter((ts) => ts >= windowStart).length;
   }
 
   private numberConfig(key: string): number | null {
@@ -427,15 +462,6 @@ export class PositionManager {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
       )
       .run(key, value, unixNow());
-  }
-
-  private deleteConfig(key: string): void {
-    this.requireDb().prepare("DELETE FROM execution_config WHERE key = ?").run(key);
-  }
-
-  private tokenDecimals(mint: string): number {
-    const row = this.requireDb().prepare("SELECT decimals FROM tokens WHERE mint = ?").get(mint) as { decimals: number } | undefined;
-    return row?.decimals ?? 9; // default SOL-like
   }
 
   private requireDb(): AppDatabase {

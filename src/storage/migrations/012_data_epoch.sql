@@ -1,0 +1,5 @@
+-- data_epoch columns on positions and executions.
+-- Handled in TypeScript (runDataEpochMigration in database.ts) because
+-- ALTER TABLE ADD COLUMN is not idempotent and migrations run on every
+-- startup. This file exists only to hold the migration's slot in the
+-- ordered file list.

@@ -56,6 +56,11 @@ const MAX_POSITION_PORTFOLIO_PCT = 3;
 const MAX_POSITION_USD = 2000;
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
+// Fills with |pnl| under a dollar are float dust from partial-exit rounding,
+// not trading outcomes — they count as neither loss nor win for the streak.
+const LOSS_STREAK_EPSILON_USD = 1;
+const LOSS_STREAK_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+const LOSS_STREAK_PAUSE_SECONDS = 6 * 60 * 60;
 const MIRROR_MIN_PCT = 0.3;
 const MIRROR_MAX_PCT = 5.0;
 const MIRROR_FALLBACK_PCT = 1.0;
@@ -77,11 +82,18 @@ function isTransientProviderError(error: unknown): boolean {
 }
 
 export class RiskEngine {
+  private closeAllHandler: ((reason: string) => Promise<void>) | null = null;
+
   constructor(private db: AppDatabase | null = null) {}
 
   configure(db: AppDatabase): void {
     this.db = db;
     this.ensurePaperBalance();
+  }
+
+  /** Wired at startup to close every open position through the normal exit path. */
+  setCloseAllHandler(handler: (reason: string) => Promise<void>): void {
+    this.closeAllHandler = handler;
   }
 
   async checkEntry(convergence: ConvergenceRow, trades: TradeRow[], _entryPriceUsd: number): Promise<RiskCheck> {
@@ -147,6 +159,21 @@ export class RiskEngine {
       finalSizeUsd = maxLiquiditySizeUsd;
       finalSizePct = (finalSizeUsd / portfolioValueUsd) * 100;
       liquidityCapApplied = true;
+    }
+
+    // Cash gate: sizing is a % of PORTFOLIO value (cash + open positions), so
+    // with heavy open exposure the computed size can exceed spendable cash and
+    // drive the paper balance negative. Never buy money we do not have.
+    if (config.execution.mode === "paper") {
+      const cashUsd = this.paperCashUsd();
+      if (finalSizeUsd > cashUsd) {
+        return {
+          allowed: false,
+          reason: `insufficient cash: size $${finalSizeUsd.toFixed(2)} exceeds paper cash $${cashUsd.toFixed(2)}`,
+          phase,
+          portfolioValueUsd
+        };
+      }
     }
 
     const honeypotLoss = this.numberConfig(`token:${convergence.token_mint}:honeypot_roundtrip_loss_pct`);
@@ -293,14 +320,30 @@ export class RiskEngine {
     if (drawdownPct <= -25) return "drawdown kill switch at -25%";
     if (drawdownPct <= -20) {
       this.pauseEntries(7 * 24 * 60 * 60, "drawdown -20% close all and freeze 7d");
+      // The breaker's name must be honest: "close all" actually closes all.
+      // (This branch is unreachable while the pause it arms is active, so it
+      // cannot re-fire in a loop; on an empty book the close-all is a no-op.)
+      this.triggerCloseAll("drawdown -20%: close all positions, freeze 7d");
       return "drawdown -20%: close all positions, freeze 7d";
     }
     if (drawdownPct <= -15) return "drawdown pause entries at -15%";
     if (drawdownPct <= -10) this.setConfig("drawdown_halve_sizes", "true");
     else this.setConfig("drawdown_halve_sizes", "false");
     if (this.lossStreak() >= 5) {
-      this.pauseEntries(6 * 60 * 60, "5 consecutive losses");
-      return "5 consecutive losses";
+      // Arm the pause ONCE per streak occurrence. Re-arming on every
+      // checkEntry call turned a 6h cooldown into a permanent deadlock: the
+      // streak stays >= 5 until a new fill lands, but no fill can land while
+      // entries re-pause themselves forever. The latest SELL fill id
+      // identifies the streak; only a new fill can start a new occurrence.
+      const latestSellId = this.latestSellFillId();
+      const pausedFor = this.stringConfig("loss_streak_paused_for_fill");
+      if (pausedFor !== String(latestSellId)) {
+        this.setConfig("loss_streak_paused_for_fill", String(latestSellId));
+        this.pauseEntries(LOSS_STREAK_PAUSE_SECONDS, "5 consecutive losses");
+        return "5 consecutive losses";
+      }
+      // Pause already served for this exact streak: let entries flow — a new
+      // trade is the only thing that can ever break the streak.
     }
     const solDropPct = this.numberConfig("sol_drop_1h_pct");
     if (solDropPct !== null && solDropPct <= -8) return "SOL dropped 8% in 1h";
@@ -317,9 +360,22 @@ export class RiskEngine {
     return this.stringConfig("kill_switch");
   }
 
+  private triggerCloseAll(reason: string): void {
+    if (!this.closeAllHandler) {
+      logger.warn({ reason }, "risk-engine: close-all requested but no handler wired; only pausing entries");
+      return;
+    }
+    this.closeAllHandler(reason).catch((error) =>
+      logger.error({ reason, err: error instanceof Error ? error : new Error(String(error)) }, "risk-engine: close-all handler failed")
+    );
+  }
+
   private phase(): RiskPhase {
+    // Phase = validated ENTRIES, not raw fill count. Exit fills (a single
+    // position can produce several) would otherwise promote the system to
+    // "mature" limits off pure exit spam.
     const filled = (
-      this.requireDb().prepare("SELECT COUNT(*) AS count FROM executions WHERE status = 'FILLED'").get() as { count: number }
+      this.requireDb().prepare("SELECT COUNT(*) AS count FROM executions WHERE status = 'FILLED' AND direction = 'BUY'").get() as { count: number }
     ).count;
     if (filled < 50) return "cold_start";
     if (filled < 200) return "validated";
@@ -417,15 +473,31 @@ export class RiskEngine {
   }
 
   private lossStreak(): number {
+    // Only fills from the trailing window count: five dust losses from a
+    // year ago must never gate today's entries. LIMIT is generous because
+    // dust fills are skipped, not counted.
+    const since = unixNow() - LOSS_STREAK_WINDOW_SECONDS;
     const rows = this.requireDb()
-      .prepare("SELECT pnl_usd FROM executions WHERE direction = 'SELL' AND status = 'FILLED' ORDER BY closed_at DESC LIMIT 5")
-      .all() as Array<{ pnl_usd: number | null }>;
+      .prepare(
+        "SELECT pnl_usd FROM executions WHERE direction = 'SELL' AND status = 'FILLED' AND closed_at >= ? ORDER BY closed_at DESC LIMIT 50"
+      )
+      .all(since) as Array<{ pnl_usd: number | null }>;
     let streak = 0;
     for (const row of rows) {
-      if ((row.pnl_usd ?? 0) < 0) streak += 1;
+      const pnl = row.pnl_usd ?? 0;
+      if (Math.abs(pnl) < LOSS_STREAK_EPSILON_USD) continue;
+      if (pnl < 0) streak += 1;
       else break;
+      if (streak >= 5) break;
     }
     return streak;
+  }
+
+  private latestSellFillId(): number {
+    const row = this.requireDb()
+      .prepare("SELECT MAX(id) AS id FROM executions WHERE direction = 'SELL' AND status = 'FILLED'")
+      .get() as { id: number | null };
+    return row.id ?? 0;
   }
 
   private winRateLast30(): number | null {

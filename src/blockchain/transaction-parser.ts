@@ -60,12 +60,12 @@ interface EnhancedTransaction {
   nativeTransfers?: EnhancedNativeTransfer[];
 }
 
-export function parseEnhancedTransactions(payload: unknown, monitoredWallets: Set<string>): ITradeEvent[] {
+export function parseEnhancedTransactions(payload: unknown, monitoredWallets: Set<string>, solPriceUsd?: number | null): ITradeEvent[] {
   const transactions = Array.isArray(payload) ? payload : [payload];
-  return transactions.flatMap((transaction) => parseEnhancedTransaction(transaction, monitoredWallets));
+  return transactions.flatMap((transaction) => parseEnhancedTransaction(transaction, monitoredWallets, solPriceUsd));
 }
 
-export function parseEnhancedTransaction(payload: unknown, monitoredWallets: Set<string>): ITradeEvent[] {
+export function parseEnhancedTransaction(payload: unknown, monitoredWallets: Set<string>, solPriceUsd?: number | null): ITradeEvent[] {
   const tx = payload as EnhancedTransaction;
   if (!tx.signature || !tx.tokenTransfers?.length) return [];
 
@@ -75,10 +75,10 @@ export function parseEnhancedTransaction(payload: unknown, monitoredWallets: Set
     if (transfer.toUserAccount && monitoredWallets.has(transfer.toUserAccount)) wallets.add(transfer.toUserAccount);
   }
 
-  return [...wallets].flatMap((wallet) => parseWalletTrade(tx, wallet));
+  return [...wallets].flatMap((wallet) => parseWalletTrade(tx, wallet, solPriceUsd));
 }
 
-function parseWalletTrade(tx: EnhancedTransaction, wallet: string): ITradeEvent[] {
+function parseWalletTrade(tx: EnhancedTransaction, wallet: string, solPriceUsd?: number | null): ITradeEvent[] {
   const tokenTransfers = tx.tokenTransfers ?? [];
   const received = tokenTransfers.filter((transfer) => transfer.toUserAccount === wallet && transfer.mint);
   const sent = tokenTransfers.filter((transfer) => transfer.fromUserAccount === wallet && transfer.mint);
@@ -91,13 +91,18 @@ function parseWalletTrade(tx: EnhancedTransaction, wallet: string): ITradeEvent[
 
   const relevant = tradeType === "BUY" ? received : sent;
   const totalSol = (tradeType === "BUY" ? solSent : solReceived) / LAMPORTS_PER_SOL;
+  const perTransferSol = totalSol / relevant.length;
+  // amount_usd is populated at ingest so the MIN_TRADE_USD convergence filter
+  // has something to filter on; left NULL the filter is permanently inert.
+  const amountUsd = solPriceUsd && solPriceUsd > 0 ? perTransferSol * solPriceUsd : undefined;
   return relevant.map((transfer) => ({
     chain: "solana",
     walletAddress: wallet,
     tokenMint: transfer.mint!,
     txSignature: tx.signature!,
     amountToken: transfer.tokenAmount,
-    amountSol: totalSol / relevant.length,
+    amountSol: perTransferSol,
+    amountUsd,
     dexSource: tx.source,
     tradeType,
     blockTime: tx.timestamp ?? Math.floor(Date.now() / 1000)

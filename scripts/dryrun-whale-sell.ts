@@ -48,6 +48,7 @@ manager.configure({
   wallets,
   exitHandler: async (_position, reason, sellPct, panicExit) => {
     calls.push({ reason, sellPct, panicExit: !!panicExit });
+    return true;
   }
 });
 

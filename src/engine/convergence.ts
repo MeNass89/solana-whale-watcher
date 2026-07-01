@@ -7,6 +7,7 @@ import type { TokenModel } from "../storage/models/tokens.js";
 import type { TradeModel, TradeRow } from "../storage/models/trades.js";
 import type { WalletModel } from "../storage/models/wallets.js";
 import { passesMvpFilters } from "./filters.js";
+import { computeMvpScore } from "./scorer.js";
 import { tradeExecutor } from "../execution/trade-executor.js";
 import { discoverCoBuyers } from "../jobs/co-buyer-scanner.js";
 import { logger } from "../utils/logger.js";
@@ -45,7 +46,9 @@ export class ConvergenceEngine {
     const convergence = this.convergences.create({
       tokenMint: newTrade.tokenMint,
       tokenSymbol: "symbol" in metadata ? metadata.symbol : undefined,
-      score: uniqueWallets.size * 30,
+      // Composite score (wallet count + wallet quality + USD volume +
+      // velocity) instead of the old bare walletCount * 30.
+      score: computeMvpScore(recentBuys, this.wallets.scoresFor([...uniqueWallets])),
       tier,
       walletCount: uniqueWallets.size,
       totalUsd: totalUsd(recentBuys),

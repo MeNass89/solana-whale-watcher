@@ -6,18 +6,13 @@ import {
 import { config } from "../config/index.js";
 import { logger } from "../utils/logger.js";
 import { getRpcRouter, type RpcRouter } from "../blockchain/rpc-router.js";
+import { tokenDecimalsResolver } from "../blockchain/token-decimals.js";
 
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
-const USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoS2GPGkdbz5PSx9GP";
 
 const JUPITER_QUOTE_URL = "https://api.jup.ag/swap/v1/quote";
 const JUPITER_SWAP_URL = "https://api.jup.ag/swap/v1/swap";
-const JUPITER_PRICE_URL = "https://api.jup.ag/price/v2";
-const PRICE_BATCH_SIZE = 100;
-const PRICE_BATCH_DELAY_MS = 200;
-const PRICE_429_BASE_DELAY_MS = 2_000;
-const PRICE_429_MAX_RETRIES = 3;
 const QUOTE_MAX_AGE_MS = 3_000;
 const SEND_INTERVAL_MS = 500;
 const CONFIRM_TIMEOUT_MS = 60_000;
@@ -77,7 +72,6 @@ interface JupiterSwapResponse {
 export class JupiterClient {
   private readonly router: RpcRouter;
   private readonly wallet: Keypair | null;
-  private readonly mintDecimalsCache = new Map<string, number>();
 
   constructor() {
     this.router = getRpcRouter();
@@ -156,89 +150,6 @@ export class JupiterClient {
     }
   }
 
-  /**
-   * Batch-fetch USD prices for multiple mints in one call using Jupiter Price
-   * API v2. Chunks into batches of PRICE_BATCH_SIZE with delays between them.
-   * Returns a Map<mint, price>. Mints that fail resolve to null.
-   */
-  async getPricesUsdBatch(mints: string[]): Promise<Map<string, number | null>> {
-    const result = new Map<string, number | null>();
-    if (mints.length === 0) return result;
-
-    // Dedupe and handle known stablecoins locally
-    const unique = [...new Set(mints)];
-    const toFetch: string[] = [];
-    for (const mint of unique) {
-      if (mint === USDC_MINT) {
-        result.set(mint, 1);
-      } else {
-        toFetch.push(mint);
-      }
-    }
-
-    // Process in batches
-    for (let i = 0; i < toFetch.length; i += PRICE_BATCH_SIZE) {
-      const batch = toFetch.slice(i, i + PRICE_BATCH_SIZE);
-      const ids = batch.join(",");
-      let fetched = false;
-
-      for (let attempt = 0; attempt <= PRICE_429_MAX_RETRIES; attempt++) {
-        try {
-          const url = `${JUPITER_PRICE_URL}?ids=${ids}&vsToken=${USDC_MINT}`;
-          const response = await fetch(url);
-
-          if (response.status === 429) {
-            const delay = PRICE_429_BASE_DELAY_MS * 2 ** attempt;
-            logger.warn({ attempt, delay, batchSize: batch.length }, "Jupiter Price API 429 — backing off");
-            await sleep(delay);
-            continue;
-          }
-
-          if (!response.ok) {
-            logger.warn({ status: response.status, batchSize: batch.length }, "Jupiter batch price request failed");
-            for (const mint of batch) result.set(mint, null);
-            fetched = true;
-            break;
-          }
-
-          const body = (await response.json()) as { data?: Record<string, { price?: string | number }> };
-          const data = body.data ?? {};
-          for (const mint of batch) {
-            const entry = data[mint];
-            const raw = entry?.price;
-            const price = typeof raw === "string" ? Number(raw) : typeof raw === "number" ? raw : NaN;
-            if (Number.isFinite(price) && isSanePrice(price)) {
-              result.set(mint, price);
-            } else {
-              result.set(mint, null);
-            }
-          }
-          fetched = true;
-          break;
-        } catch (error) {
-          if (attempt === PRICE_429_MAX_RETRIES) {
-            logger.warn({ err: error instanceof Error ? error.message : String(error), batchSize: batch.length }, "Jupiter batch price: all retries failed");
-            for (const mint of batch) result.set(mint, null);
-            fetched = true;
-          } else {
-            await sleep(PRICE_429_BASE_DELAY_MS * 2 ** attempt);
-          }
-        }
-      }
-
-      if (!fetched) {
-        for (const mint of batch) result.set(mint, null);
-      }
-
-      // Delay between batches to avoid hammering
-      if (i + PRICE_BATCH_SIZE < toFetch.length) {
-        await sleep(PRICE_BATCH_DELAY_MS);
-      }
-    }
-
-    return result;
-  }
-
   async getQuote(params: SwapParams): Promise<JupiterQuote> {
     const url = new URL(JUPITER_QUOTE_URL);
     url.searchParams.set("inputMint", params.inputMint);
@@ -311,12 +222,17 @@ export class JupiterClient {
   }
 
   private async executePaperSwap(params: SwapParams): Promise<SwapResult> {
+    // No fallback pricing: a failed quote MUST fail the paper swap. The old
+    // spot-price fallback priced full exits at zero-impact buy-side spot and
+    // minted phantom cash (+$572k on a single dead token). A fill that
+    // Jupiter cannot quote is a fill that would not exist in live trading.
     const quote = await this.getQuote(params).catch((error) => {
-      logger.warn({ error }, "Jupiter paper quote unavailable; using price fallback");
-      return null;
+      throw new Error(
+        `Jupiter paper quote unavailable; refusing to synthesize a fill: ${error instanceof Error ? error.message : String(error)}`
+      );
     });
-    const inputAmount = await this.rawAmountToUi(params.inputMint, params.amountLamports, quote?.inputDecimals);
-    if (quote && BigInt(quote.inAmount) !== params.amountLamports) {
+    const inputAmount = await this.rawAmountToUi(params.inputMint, params.amountLamports, quote.inputDecimals);
+    if (BigInt(quote.inAmount) !== params.amountLamports) {
       // A mismatched quote means the swap simulation priced a different size
       // than we requested. Recording the fill against the requested size
       // would attribute a wrong entry price; rejecting is safer than silent
@@ -325,22 +241,17 @@ export class JupiterClient {
         `jupiter: quote.inAmount (${quote.inAmount}) does not match requested amountLamports (${params.amountLamports.toString()})`
       );
     }
-    if (quote?.priceImpactPct) {
+    if (quote.priceImpactPct) {
       const allowedImpactPct = this.exitSlippageBps(params) / 100;
       if (Number(quote.priceImpactPct) > allowedImpactPct) {
         throw new Error(`Price impact ${quote.priceImpactPct}% exceeds ${allowedImpactPct}% limit`);
       }
     }
-    let outputAmount: number;
-    if (quote) {
-      outputAmount = await this.rawAmountToUi(params.outputMint, BigInt(quote.outAmount), quote.outputDecimals);
-    } else {
-      outputAmount = await this.fallbackOutputAmount(params, inputAmount);
-    }
-    // Sanity-check both branches: a malformed quote (e.g. wrong decimals) can
-    // also produce an absurd outputAmount that would poison downstream PnL.
+    const outputAmount = await this.rawAmountToUi(params.outputMint, BigInt(quote.outAmount), quote.outputDecimals);
+    // Sanity-check: a malformed quote (e.g. wrong decimals) can produce an
+    // absurd outputAmount that would poison downstream PnL.
     if (!Number.isFinite(outputAmount) || outputAmount <= 0 || outputAmount > 1e30) {
-      logger.warn({ inputMint: params.inputMint, outputMint: params.outputMint, outputAmount, quoted: Boolean(quote) }, "paper swap: produced insane output amount, rejecting");
+      logger.warn({ inputMint: params.inputMint, outputMint: params.outputMint, outputAmount }, "paper swap: produced insane output amount, rejecting");
       throw new Error("Paper swap pricing produced invalid amount");
     }
 
@@ -348,16 +259,9 @@ export class JupiterClient {
       txSignature: `paper-${Date.now()}`,
       inputAmount,
       outputAmount,
-      priceImpactPct: quote ? Number(quote.priceImpactPct ?? 0) : 0,
+      priceImpactPct: Number(quote.priceImpactPct ?? 0),
       executedAt: Math.floor(Date.now() / 1000)
     };
-  }
-
-  private async fallbackOutputAmount(params: SwapParams, inputAmount: number): Promise<number> {
-    const inputPrice = params.inputMint === USDC_MINT ? 1 : await this.getPriceUsd(params.inputMint);
-    const outputPrice = params.outputMint === USDC_MINT ? 1 : await this.getPriceUsd(params.outputMint);
-    if (!inputPrice || !outputPrice) return 0;
-    return (inputAmount * inputPrice) / outputPrice;
   }
 
   private async freshQuote(params: SwapParams): Promise<JupiterQuote> {
@@ -478,23 +382,10 @@ export class JupiterClient {
     return Number(rawAmount) / 10 ** decimals;
   }
 
+  // Shared resolver: DB token row -> on-chain mint fetch -> throws on failure.
+  // No silent default — a guessed scale corrupts every downstream amount.
   private async tokenDecimals(mint: string): Promise<number> {
-    const known = knownTokenDecimals(mint);
-    if (known !== null) return known;
-
-    const cached = this.mintDecimalsCache.get(mint);
-    if (cached !== undefined) return cached;
-
-    const mintKey = new PublicKey(mint);
-    const account = await this.router.call("getAccountInfo", (c) => c.getAccountInfo(mintKey));
-    const decimals = account?.data[44];
-    if (decimals === undefined) {
-      logger.warn({ mint }, "Token mint decimals unavailable; defaulting to 9");
-      return 9;
-    }
-
-    this.mintDecimalsCache.set(mint, decimals);
-    return decimals;
+    return tokenDecimalsResolver.resolve(mint);
   }
 }
 
@@ -502,12 +393,6 @@ function parseWalletKeypair(secret: string): Keypair {
   if (!secret) throw new Error("SOLANA_WALLET_PRIVATE is empty");
   const values = JSON.parse(secret) as number[];
   return Keypair.fromSecretKey(Uint8Array.from(values));
-}
-
-function knownTokenDecimals(mint: string): number | null {
-  if (mint === SOL_MINT) return 9;
-  if (mint === USDC_MINT || mint === USDT_MINT) return 6;
-  return null;
 }
 
 function quoteTokenDecimals(raw: Record<string, unknown>, mint: string, side: "input" | "output"): number | undefined {

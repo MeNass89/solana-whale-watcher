@@ -53,7 +53,11 @@ export class HeliusClient implements IChainMonitor {
         webhookURL: webhookUrl,
         transactionTypes: ["SWAP"],
         accountAddresses: addresses,
-        webhookType: "enhanced"
+        webhookType: "enhanced",
+        // Helius echoes this as the Authorization header on every delivery;
+        // without it our HMAC middleware 401s every webhook and the pipeline
+        // silently starves.
+        authHeader: config.helius.webhookSecret
       })
     });
 
@@ -72,7 +76,10 @@ export class HeliusClient implements IChainMonitor {
         webhookURL: webhookUrl,
         transactionTypes: ["SWAP"],
         accountAddresses: addresses,
-        webhookType: "enhanced"
+        webhookType: "enhanced",
+        // Keep the auth header on updates too — a PUT without it strips the
+        // header from the registration and re-starves the pipeline.
+        authHeader: config.helius.webhookSecret
       })
     });
   }

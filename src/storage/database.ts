@@ -29,10 +29,29 @@ export function runMigrations(db: AppDatabase): void {
       runWalletPnlTrackingMigration(db);
       continue;
     }
+    if (file === "012_data_epoch.sql") {
+      runDataEpochMigration(db);
+      continue;
+    }
     const sql = fs.readFileSync(path.join(migrationsPath, file), "utf8");
     db.exec(sql);
   }
   logger.info("SQLite migrations applied");
+}
+
+function runDataEpochMigration(db: AppDatabase): void {
+  const tx = db.transaction(() => {
+    for (const table of ["positions", "executions"] as const) {
+      const columns = new Set(
+        (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name)
+      );
+      if (!columns.has("data_epoch")) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN data_epoch INTEGER DEFAULT 1`);
+      }
+    }
+  });
+  // Same locking rationale as runWalletPnlTrackingMigration.
+  tx.immediate();
 }
 
 function runWalletPnlTrackingMigration(db: AppDatabase): void {

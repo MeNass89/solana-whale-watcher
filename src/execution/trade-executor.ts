@@ -10,11 +10,20 @@ import { positionManager } from "./position-manager.js";
 import type { JupiterClient } from "./jupiter-client.js";
 import { jupiterClient, USDC_MINT } from "./jupiter-client.js";
 import { riskEngine, type RiskEngine } from "./risk-engine.js";
+import type { TokenDecimalsResolver } from "../blockchain/token-decimals.js";
+import { tokenDecimalsResolver } from "../blockchain/token-decimals.js";
 
 const NOTABLE_ENTRY_DELAY_MS = 12_000;
 const CRITICAL_MAX_SIGNAL_AGE_SECONDS = 45 * 60;
 const NOTABLE_MAX_SIGNAL_AGE_SECONDS = 90 * 60;
 const NOTABLE_MAX_ADVERSE_MOVE_PCT = 3;
+const STALE_PENDING_MAX_AGE_MINUTES = 15;
+
+function isUniqueViolation(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException & { code?: string })?.code;
+  const msg = error instanceof Error ? error.message : "";
+  return code === "SQLITE_CONSTRAINT_UNIQUE" || /UNIQUE constraint failed/i.test(msg);
+}
 
 // Pump.fun mints share a "...pump" suffix. We do not trade them: timing is
 // sub-second-sensitive and our pipeline (Helius webhook → 12s NOTABLE delay →
@@ -28,19 +37,28 @@ export class TradeExecutor {
   private swaps: JupiterClient = jupiterClient;
   private risk: RiskEngine = riskEngine;
   private positions: PositionManager = positionManager;
+  private decimals: TokenDecimalsResolver = tokenDecimalsResolver;
   private discord = new DiscordAlerter();
+  // In-flight guards. The entry pipeline awaits network calls between its DB
+  // dedup checks and its DB writes, so two convergences on the same token can
+  // interleave and both pass the checks; same story for concurrent exits
+  // (whale-sell webhook vs 30s tick) on one position.
+  private entriesInFlight = new Set<string>();
+  private exitsInFlight = new Set<number>();
 
   configure(input: {
     db: AppDatabase;
     swaps?: JupiterClient;
     risk?: RiskEngine;
     positions?: PositionManager;
+    decimals?: TokenDecimalsResolver;
     discord?: DiscordAlerter;
   }): void {
     this.db = input.db;
     this.swaps = input.swaps ?? jupiterClient;
     this.risk = input.risk ?? riskEngine;
     this.positions = input.positions ?? positionManager;
+    this.decimals = input.decimals ?? tokenDecimalsResolver;
     this.discord = input.discord ?? new DiscordAlerter();
   }
 
@@ -56,6 +74,19 @@ export class TradeExecutor {
       return;
     }
 
+    if (this.entriesInFlight.has(convergence.token_mint)) {
+      logger.info({ convergenceId: convergence.id, mint: convergence.token_mint }, "execution skipped; entry already in flight for this token");
+      return;
+    }
+    this.entriesInFlight.add(convergence.token_mint);
+    try {
+      await this.executeEntry(convergence, trades);
+    } finally {
+      this.entriesInFlight.delete(convergence.token_mint);
+    }
+  }
+
+  private async executeEntry(convergence: ConvergenceRow, trades: TradeRow[]): Promise<void> {
     const existing = this.requireDb()
       .prepare("SELECT id FROM executions WHERE convergence_id = ? AND direction = 'BUY' AND status IN ('PENDING','FILLED')")
       .get(convergence.id) as { id: number } | undefined;
@@ -117,14 +148,25 @@ export class TradeExecutor {
       return;
     }
 
-    const executionId = this.createExecution({
-      convergence,
-      direction: "BUY",
-      amountUsd: risk.sizeUsd,
-      priceUsd: entryPrice,
-      status: "PENDING",
-      sizePct: risk.adjustedSizePct
-    });
+    let executionId: number;
+    try {
+      executionId = this.createExecution({
+        convergence,
+        direction: "BUY",
+        amountUsd: risk.sizeUsd,
+        priceUsd: entryPrice,
+        status: "PENDING",
+        sizePct: risk.adjustedSizePct
+      });
+    } catch (error) {
+      // The partial unique index on live BUYs (one PENDING/FILLED BUY per
+      // token) is the DB-level backstop against duplicate entries.
+      if (isUniqueViolation(error)) {
+        logger.info({ convergenceId: convergence.id, mint: convergence.token_mint }, "execution skipped; live BUY already exists for this token (unique index)");
+        return;
+      }
+      throw error;
+    }
 
     try {
       const result = await this.swaps.executeSwap({
@@ -142,23 +184,30 @@ export class TradeExecutor {
       }
       const amountToken = result.outputAmount;
       const actualEntryPrice = risk.sizeUsd / amountToken;
-      this.fillExecution(executionId, {
-        direction: "BUY",
-        amountToken,
-        amountUsd: risk.sizeUsd,
-        priceUsd: actualEntryPrice,
-        txSignature: result.txSignature
+      // Fill + balance debit + position open commit atomically: a crash
+      // between them would otherwise leave a paid-for fill with no position
+      // (or an unpaid position). Network I/O stays outside the transaction.
+      const sizeUsd = risk.sizeUsd;
+      const applyEntryFill = this.requireDb().transaction(() => {
+        this.fillExecution(executionId, {
+          direction: "BUY",
+          amountToken,
+          amountUsd: sizeUsd,
+          priceUsd: actualEntryPrice,
+          txSignature: result.txSignature
+        });
+        if (config.execution.mode === "paper") this.risk.updatePaperBalance(-sizeUsd);
+        return this.positions.openPosition({
+          tokenMint: convergence.token_mint,
+          tokenSymbol: convergence.token_symbol,
+          entryExecutionId: executionId,
+          convergenceId: convergence.id,
+          amountToken,
+          entryPriceUsd: actualEntryPrice,
+          tier: convergence.tier
+        });
       });
-      if (config.execution.mode === "paper") this.risk.updatePaperBalance(-risk.sizeUsd);
-      const position = this.positions.openPosition({
-        tokenMint: convergence.token_mint,
-        tokenSymbol: convergence.token_symbol,
-        entryExecutionId: executionId,
-        convergenceId: convergence.id,
-        amountToken,
-        entryPriceUsd: actualEntryPrice,
-        tier: convergence.tier
-      });
+      const position = applyEntryFill();
       try {
         await this.notify("ENTRY_FILLED", convergence, [
           { name: "Mode", value: config.execution.mode.toUpperCase(), inline: true },
@@ -178,13 +227,27 @@ export class TradeExecutor {
     }
   }
 
-  async exitPosition(position: PositionRow, reason: string, sellPct: number, panicExit = false): Promise<void> {
-    if (!config.execution.enabled) return;
+  /** Returns true only when the exit actually settled (fill or dust-close). */
+  async exitPosition(position: PositionRow, reason: string, sellPct: number, panicExit = false): Promise<boolean> {
+    if (!config.execution.enabled) return false;
+    if (this.exitsInFlight.has(position.id)) {
+      logger.info({ positionId: position.id, reason }, "exit skipped; another exit already in flight for this position");
+      return false;
+    }
+    this.exitsInFlight.add(position.id);
+    try {
+      return await this.executeExit(position, reason, sellPct, panicExit);
+    } finally {
+      this.exitsInFlight.delete(position.id);
+    }
+  }
+
+  private async executeExit(position: PositionRow, reason: string, sellPct: number, panicExit: boolean): Promise<boolean> {
     const current = this.positions.findById(position.id);
-    if (!current || current.status === "CLOSED" || current.amount_token <= 0) return;
+    if (!current || current.status === "CLOSED" || current.amount_token <= 0) return false;
     const priceUsd = (await this.swaps.getPriceUsd(current.token_mint)) ?? current.current_price_usd ?? current.entry_price_usd;
     const sellAmountToken = current.amount_token * Math.min(100, Math.max(0, sellPct)) / 100;
-    if (sellAmountToken <= 0) return;
+    if (sellAmountToken <= 0) return false;
 
     const amountUsd = sellAmountToken * priceUsd;
     const exitLiquidityUsd = await this.risk.tokenLiquidityLive(current.token_mint);
@@ -193,7 +256,18 @@ export class TradeExecutor {
     const fallbackBps = panicExit ? 2000 : 500;
     const slippageBps = this.swaps.slippageBpsForLiquidity(exitLiquidityUsd) ?? fallbackBps;
 
-    const decimals = Math.max(0, Math.trunc(this.tokenDecimals(current.token_mint)));
+    let decimals: number;
+    try {
+      decimals = Math.max(0, Math.trunc(await this.decimals.resolve(current.token_mint)));
+    } catch (error) {
+      // A guessed scale sells 1000x too much or too little; failing the exit
+      // (it retries next tick) is strictly safer than defaulting.
+      logger.error(
+        { positionId: current.id, mint: current.token_mint, err: error instanceof Error ? error : new Error(String(error)) },
+        "position exit failed: token decimals unresolvable"
+      );
+      return false;
+    }
     const scale = 10n ** BigInt(decimals);
     let total: bigint;
     if (!Number.isFinite(sellAmountToken) || sellAmountToken <= 0) {
@@ -211,7 +285,7 @@ export class TradeExecutor {
         "exit closed (dust): requested amount rounds to zero base units"
       );
       this.positions.markExit(current, 0, priceUsd, `${reason}_DUST_CLOSE`);
-      return;
+      return true;
     }
     const amountLamports = total;
     const actualSellTokenAmount = Number(amountLamports) / Number(scale);
@@ -250,28 +324,34 @@ export class TradeExecutor {
       const exitPrice = actualSellTokenAmount > 0 ? exitUsd / actualSellTokenAmount : priceUsd;
       const pnlUsd = actualSellTokenAmount * (exitPrice - current.entry_price_usd);
       const pnlPct = ((exitPrice - current.entry_price_usd) / current.entry_price_usd) * 100;
-      this.fillExecution(executionId, {
-        direction: "SELL",
-        amountToken: actualSellTokenAmount,
-        amountUsd: exitUsd,
-        priceUsd: exitPrice,
-        txSignature: result.txSignature,
-        pnlUsd,
-        pnlPct,
-        exitReason: reason
+      // Fill + balance credit + position update commit atomically (see entry).
+      const applyExitFill = this.requireDb().transaction(() => {
+        this.fillExecution(executionId, {
+          direction: "SELL",
+          amountToken: actualSellTokenAmount,
+          amountUsd: exitUsd,
+          priceUsd: exitPrice,
+          txSignature: result.txSignature,
+          pnlUsd,
+          pnlPct,
+          exitReason: reason
+        });
+        if (config.execution.mode === "paper") this.risk.updatePaperBalance(exitUsd);
+        const remaining = Math.max(0, current.amount_token - actualSellTokenAmount);
+        this.positions.markExit(current, remaining, exitPrice, reason);
       });
-      if (config.execution.mode === "paper") this.risk.updatePaperBalance(exitUsd);
-      const remaining = Math.max(0, current.amount_token - actualSellTokenAmount);
-      this.positions.markExit(current, remaining, exitPrice, reason);
+      applyExitFill();
       try {
         await this.notifyPositionExit(current, reason, pnlUsd, pnlPct);
       } catch (notifyErr) {
         logger.warn({ err: notifyErr, positionId: current.id }, "trade-executor: exit notification failed (non-fatal)");
       }
+      return true;
     } catch (error) {
       this.failExecution(executionId, error);
       this.risk.recordFailedTransaction();
       logger.error({ error, positionId: current.id }, "position exit failed");
+      return false;
     }
   }
 
@@ -352,19 +432,34 @@ export class TradeExecutor {
       .run(String(error), id);
   }
 
+  /**
+   * Marks PENDING executions older than the cutoff as FAILED. A crash between
+   * createExecution and the fill/fail update leaves PENDING rows that block
+   * convergence retries and (for BUYs) hold the per-token unique slot forever.
+   * Run at startup and periodically.
+   */
+  reapStalePendingExecutions(maxAgeMinutes = STALE_PENDING_MAX_AGE_MINUTES): number {
+    const cutoff = unixNow() - maxAgeMinutes * 60;
+    const result = this.requireDb()
+      .prepare(
+        `UPDATE executions
+         SET status = 'FAILED',
+             exit_reason = COALESCE(exit_reason || ' | ', '') || 'STALE_PENDING_REAPED',
+             closed_at = unixepoch()
+         WHERE status = 'PENDING' AND created_at < ?`
+      )
+      .run(cutoff);
+    if (result.changes > 0) {
+      logger.warn({ reaped: result.changes, maxAgeMinutes }, "trade-executor: stale PENDING executions marked FAILED");
+    }
+    return result.changes;
+  }
+
   private isStale(convergence: ConvergenceRow): boolean {
     const ageSeconds = unixNow() - convergence.first_trade_at;
     if (convergence.tier === "CRITICAL") return ageSeconds > CRITICAL_MAX_SIGNAL_AGE_SECONDS;
     if (convergence.tier === "NOTABLE") return ageSeconds > NOTABLE_MAX_SIGNAL_AGE_SECONDS;
     return false;
-  }
-
-
-  private tokenDecimals(mint: string): number {
-    const row = this.requireDb().prepare("SELECT decimals FROM tokens WHERE mint = ?").get(mint) as
-      | { decimals: number | null }
-      | undefined;
-    return row?.decimals ?? 6;
   }
 
   private async notify(

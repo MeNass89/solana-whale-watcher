@@ -9,10 +9,29 @@ import type { TradeModel } from "../../storage/models/trades.js";
 import type { WalletModel } from "../../storage/models/wallets.js";
 import { logger, logWallet } from "../../utils/logger.js";
 import { positionManager } from "../../execution/position-manager.js";
+import { jupiterClient, SOL_MINT } from "../../execution/jupiter-client.js";
 import { formatWhaleTradeMessage } from "../../alerts/formatter.js";
 import { DiscordAlerter } from "../../alerts/discord.js";
 
 const WHALE_ALERT_MIN_SCORE = 40;
+const SOL_PRICE_TTL_MS = 60_000;
+
+let solPriceCache: { price: number; at: number } | null = null;
+
+/**
+ * SOL/USD with a short TTL so every webhook does not spend a Jupiter call.
+ * On fetch failure the last known price is reused (stale beats NULL: the
+ * amount_usd it feeds is a $500 threshold filter, not an accounting figure).
+ */
+async function cachedSolPriceUsd(): Promise<number | null> {
+  if (solPriceCache && Date.now() - solPriceCache.at < SOL_PRICE_TTL_MS) return solPriceCache.price;
+  const price = await jupiterClient.getPriceUsd(SOL_MINT).catch(() => null);
+  if (price !== null && price > 0) {
+    solPriceCache = { price, at: Date.now() };
+    return price;
+  }
+  return solPriceCache?.price ?? null;
+}
 
 export async function registerWebhookRoutes(
   app: FastifyInstance,
@@ -29,7 +48,8 @@ export async function registerWebhookRoutes(
 
   app.post("/api/webhooks/helius", { preHandler: verifyHeliusHmac }, async (request, reply) => {
     const activeWallets = new Set(deps.wallets.listActive().map((wallet) => wallet.address));
-    const parsedTrades = parseEnhancedTransactions(request.body, activeWallets);
+    const solPriceUsd = await cachedSolPriceUsd();
+    const parsedTrades = parseEnhancedTransactions(request.body, activeWallets, solPriceUsd);
 
     for (const trade of parsedTrades) {
       if (isRapidReversal(trade)) {
