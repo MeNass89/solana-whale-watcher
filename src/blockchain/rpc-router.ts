@@ -128,7 +128,11 @@ export class RpcRouter {
   }
 
   private register(id: EndpointId, url: string): void {
-    const connection = new Connection(url, "confirmed");
+    // disableRetryOnRateLimit: web3.js otherwise retries 429s internally with
+    // backoff — every hidden retry is a real billed request invisible to the
+    // usage logger, and it makes the endpoint look hard-down to the breaker.
+    // 429s must surface immediately so the router fails over instead.
+    const connection = new Connection(url, { commitment: "confirmed", disableRetryOnRateLimit: true });
     const breaker = new CircuitBreaker({ name: id });
     this.endpoints.set(id, { id, url, connection, breaker });
   }

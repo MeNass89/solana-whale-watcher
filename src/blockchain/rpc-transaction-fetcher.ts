@@ -16,10 +16,13 @@ import type { RpcRouter } from "./rpc-router.js";
 import type { HeliusTransaction, HeliusTokenTransfer, HeliusNativeTransfer } from "./helius-client.js";
 import { logger } from "../utils/logger.js";
 
-/** Batch size for concurrent getParsedTransaction calls */
-const TX_FETCH_BATCH_SIZE = 15;
+/** Batch size for concurrent getParsedTransaction calls.
+ * ~10 req/s sustained (5 per ~500ms incl. latency) stays under Alchemy's free
+ * throughput cap; 15-wide bursts at 200ms tripped 429 cascades that opened the
+ * breaker and dumped the whole getTransaction load onto Helius's monthly quota. */
+const TX_FETCH_BATCH_SIZE = 5;
 /** Delay between batches to avoid rate-limit bursts (ms) */
-const BATCH_DELAY_MS = 200;
+const BATCH_DELAY_MS = 350;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
