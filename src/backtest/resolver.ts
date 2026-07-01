@@ -117,16 +117,18 @@ export function runResolve(options: ResolveOptions): {
 
   if (!options.dryRun) ensureResolvedViaColumn(live);
 
-  const rows = resolvableConvergences(live, Math.floor(Date.now() / 1000), options.limit);
+  const rows = resolvableConvergences(live, Math.floor(Date.now() / 1000));
   console.log(`[resolve] ${rows.length} convergences to resolve${options.dryRun ? " (dry run)" : ""}`);
 
   // Only tokens the fetcher has settled: 'done' resolves against candles,
   // 'no_data' means GeckoTerminal has never seen the token → DEAD. Tokens
   // still unfetched or in 'error' are skipped (retried on a later pass).
-  const settled = rows.filter((row) => {
+  // --limit bounds the rows actually resolved (smoke runs).
+  let settled = rows.filter((row) => {
     const state = store.getFetchState(row.token_mint);
     return state?.status === "done" || state?.status === "no_data";
   });
+  if (options.limit !== undefined) settled = settled.slice(0, Math.floor(options.limit));
   console.log(`[resolve] ${settled.length}/${rows.length} rows have settled candle fetch state`);
 
   const byOutcome: Record<string, number> = {};
