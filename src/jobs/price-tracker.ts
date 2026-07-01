@@ -19,6 +19,17 @@ const RECENT_WINDOW_SECONDS = 8 * 24 * 60 * 60;
 // forever by the age cutoff.
 const BACKLOG_BATCH_SIZE = 100;
 
+// A live spot price is only an honest sample of "price at detection + N" while
+// the clock is still near N. Outside these tolerances the sample must come from
+// historical candles (the offline BACKFILL resolver), never from today's spot —
+// stamping today's price into price_1h on a two-month-old row poisons every
+// downstream forward-return statistic.
+const SAMPLE_WINDOWS = {
+  h1: { after: 3600, until: 3 * 3600 },
+  h24: { after: 86400, until: 2 * 86400 },
+  d7: { after: 7 * 86400, until: 8 * 86400 }
+} as const;
+
 export async function runPriceTracker(db: AppDatabase): Promise<void> {
   const now = unixNow();
   const recent = db
@@ -54,6 +65,7 @@ export async function runPriceTracker(db: AppDatabase): Promise<void> {
 
   let updated = 0;
   let markedDead = 0;
+  let queuedBackfill = 0;
 
   for (const row of rows) {
     const age = now - row.first_trade_at;
@@ -83,17 +95,25 @@ export async function runPriceTracker(db: AppDatabase): Promise<void> {
       db.prepare("UPDATE convergences SET price_at_detection = ? WHERE id = ?").run(price, row.id);
     }
 
+    if (pastWindow) {
+      // Alive token, legit baseline, but every sampling window has passed:
+      // hand the row to the offline historical resolver instead of lying.
+      db.prepare("UPDATE convergences SET outcome = 'BACKFILL' WHERE id = ?").run(row.id);
+      queuedBackfill++;
+      continue;
+    }
+
     const detection = row.price_at_detection ?? price;
 
-    if (!row.price_1h && age >= 3600) {
+    if (!row.price_1h && age >= SAMPLE_WINDOWS.h1.after && age <= SAMPLE_WINDOWS.h1.until) {
       db.prepare("UPDATE convergences SET price_1h = ? WHERE id = ?").run(price, row.id);
       updated++;
     }
-    if (!row.price_24h && age >= 86400) {
+    if (!row.price_24h && age >= SAMPLE_WINDOWS.h24.after && age <= SAMPLE_WINDOWS.h24.until) {
       db.prepare("UPDATE convergences SET price_24h = ? WHERE id = ?").run(price, row.id);
       updated++;
     }
-    if (!row.price_7d && age >= 7 * 86400) {
+    if (!row.price_7d && age >= SAMPLE_WINDOWS.d7.after && age <= SAMPLE_WINDOWS.d7.until) {
       db.prepare("UPDATE convergences SET price_7d = ? WHERE id = ?").run(price, row.id);
       const pnlPct = ((price - detection) / detection) * 100;
       const outcome = pnlPct >= 10 ? "WIN" : pnlPct <= -20 ? "LOSS" : "FLAT";
@@ -102,7 +122,10 @@ export async function runPriceTracker(db: AppDatabase): Promise<void> {
     }
   }
 
-  if (updated > 0 || markedDead > 0) {
-    logger.info({ pending: rows.length, backlog: backlog.length, updated, markedDead }, "price-tracker: snapshots recorded");
+  if (updated > 0 || markedDead > 0 || queuedBackfill > 0) {
+    logger.info(
+      { pending: rows.length, backlog: backlog.length, updated, markedDead, queuedBackfill },
+      "price-tracker: snapshots recorded"
+    );
   }
 }
