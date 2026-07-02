@@ -8,6 +8,7 @@
  */
 import { DEFAULT_CANDLE_DB } from "./candle-store.js";
 import { runFetch } from "./fetcher.js";
+import { M1_DEFAULT_SAMPLE, m1TokensToFetch, runM1Report } from "./m1-study.js";
 import { runReplay } from "./replay.js";
 import { runReport } from "./report.js";
 import { runResolve } from "./resolver.js";
@@ -33,6 +34,14 @@ Commands:
               --size <usd>   fixed position size (default 1000)
   report    Render backtest/REPORT.md (signal study + replay results) and
             copy it to the iCloud temp dir.
+  fetch --m1 [--sample <n>]
+            Pull candles for the m=1 universe (first whale buy per token),
+            deterministic sample of n tokens (default ${M1_DEFAULT_SAMPLE}).
+            Run only after the convergence fetch has finished (shared
+            GeckoTerminal quota).
+  m1-report Render backtest/M1-REPORT.md — horizon curves, walk-forward
+            wallet selection, simulated exits for the m=1 signal.
+              --sample <n>   must match the fetch sample (default ${M1_DEFAULT_SAMPLE})
 
 Options:
   --candles <path>  candle DB path (default ${DEFAULT_CANDLE_DB})
@@ -53,9 +62,14 @@ async function main(): Promise<void> {
   const candleDbPath = argValue(args, "--candles") ?? DEFAULT_CANDLE_DB;
 
   switch (command) {
-    case "fetch":
-      await runFetch(candleDbPath);
+    case "fetch": {
+      const sample = argValue(args, "--sample");
+      const tokensOverride = args.includes("--m1")
+        ? m1TokensToFetch(undefined, sample ? Number(sample) : M1_DEFAULT_SAMPLE)
+        : undefined;
+      await runFetch(candleDbPath, undefined, tokensOverride);
       break;
+    }
     case "resolve": {
       const limit = argValue(args, "--limit");
       runResolve({
@@ -78,6 +92,14 @@ async function main(): Promise<void> {
     case "report":
       runReport();
       break;
+    case "m1-report": {
+      const sample = argValue(args, "--sample");
+      runM1Report({
+        candleDbPath,
+        sampleSize: sample ? Number(sample) : undefined
+      });
+      break;
+    }
     default:
       console.error(`Unknown command: ${command}\n`);
       console.log(HELP);

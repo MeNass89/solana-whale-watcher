@@ -106,14 +106,18 @@ export async function ensureSolDailyCandles(store: CandleStore, live: Database.D
   console.log(`[fetch] WSOL daily candles: ${bars.length} bars stored`);
 }
 
-export async function runFetch(candleDbPath: string, liveDbPath?: string): Promise<void> {
+export async function runFetch(
+  candleDbPath: string,
+  liveDbPath?: string,
+  tokensOverride?: Map<string, number[]>
+): Promise<void> {
   const store = new CandleStore(candleDbPath);
   const live = openLiveReadonly(liveDbPath);
   const nowTs = Math.floor(Date.now() / 1000);
 
   await ensureSolDailyCandles(store, live);
 
-  const tokens = tokensNeedingCandles(live, nowTs);
+  const tokens = tokensOverride ?? tokensNeedingCandles(live, nowTs);
   console.log(`[fetch] ${tokens.size} tokens to cover`);
 
   let index = 0;
