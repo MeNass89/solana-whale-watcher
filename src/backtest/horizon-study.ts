@@ -41,7 +41,7 @@ export const HORIZONS: Horizon[] = [
 interface CurveRow {
   token_mint: string;
   wallet_count: number;
-  first_trade_at: number;
+  last_trade_at: number;
   is_pump: number;
 }
 
@@ -64,14 +64,29 @@ function pct(x: number | undefined | null): string {
 
 export function buildHorizonStudy(candleDbPath = DEFAULT_CANDLE_DB, liveDbPath?: string): string {
   const live = openLiveReadonly(liveDbPath);
-  const rows = live
+  // t0 = last_trade_at: the convergence is only DETECTABLE when the Nth
+  // wallet trades. Anchoring at first_trade_at (avg gap: >1h for 5+ wallets)
+  // would credit the curve with the whales' own pump — uncapturable.
+  const allRows = live
     .prepare(
-      `SELECT token_mint, wallet_count, first_trade_at,
+      `SELECT token_mint, wallet_count, last_trade_at,
               CASE WHEN token_mint LIKE '%pump' THEN 1 ELSE 0 END AS is_pump
-       FROM convergences`
+       FROM convergences
+       ORDER BY last_trade_at ASC`
     )
     .all() as CurveRow[];
   live.close();
+
+  // Dedupe: the live detector writes escalating rows as wallets pile in
+  // (565 rows for only 24 unique 5+ pump tokens). Keep the FIRST trigger per
+  // (token, wallet-bucket) — you trade the first signal, not every escalation.
+  const seen = new Set<string>();
+  const rows = allRows.filter((row) => {
+    const key = `${row.token_mint}|${walletBucket(row.wallet_count)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
   const store = new CandleStore(candleDbPath);
   // bucketKey -> horizonLabel -> returns[]
@@ -84,8 +99,8 @@ export function buildHorizonStudy(candleDbPath = DEFAULT_CANDLE_DB, liveDbPath?:
     // is unreliable for backlogged rows (stamped hours/days late, often
     // post-collapse, which fabricates phantom +1000% returns).
     const baseline =
-      store.closestClose(row.token_mint, "minute", row.first_trade_at, 600)?.close ??
-      store.closestClose(row.token_mint, "hour", row.first_trade_at, 1800)?.close;
+      store.closestClose(row.token_mint, "minute", row.last_trade_at, 600)?.close ??
+      store.closestClose(row.token_mint, "hour", row.last_trade_at, 1800)?.close;
     if (!baseline || baseline <= 0) continue;
     const key = `${walletBucket(row.wallet_count)}|${row.is_pump ? "pump" : "non-pump"}`;
     let byHorizon = buckets.get(key);
@@ -98,7 +113,7 @@ export function buildHorizonStudy(candleDbPath = DEFAULT_CANDLE_DB, liveDbPath?:
       const candle = store.closestClose(
         row.token_mint,
         h.timeframe,
-        row.first_trade_at + h.seconds,
+        row.last_trade_at + h.seconds,
         h.toleranceSeconds
       );
       if (!candle || candle.close <= 0) continue;
@@ -119,9 +134,11 @@ export function buildHorizonStudy(candleDbPath = DEFAULT_CANDLE_DB, liveDbPath?:
   lines.push(`## Horizon curve — candle-based forward returns, 1m → 12h`);
   lines.push("");
   lines.push(
-    `Baseline = candle close at detection time (stored price_at_detection is NOT used — ` +
-      `it was stamped late for backlogged rows). **${sampled}** of ${rows.length} convergences ` +
-      `have candle coverage. med = median %, wm = winsorized mean % (1/99), wr = share > 0.`
+    `Anchor t0 = last_trade_at (the trigger trade — the earliest moment the signal is ` +
+      `detectable); baseline = candle close at t0 (stored price_at_detection is NOT used). ` +
+      `Deduped to the first trigger per token × wallet-bucket: **${rows.length}** unique signals ` +
+      `from ${allRows.length} rows, **${sampled}** with candle coverage. ` +
+      `med = median %, wm = winsorized mean % (1/99), wr = share > 0.`
   );
   lines.push("");
 
