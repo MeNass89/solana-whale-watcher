@@ -1,6 +1,6 @@
 # Whale-convergence alpha report
 
-Generated 2026-07-02T07:31:10.850Z by `src/backtest` harness (branch alpha-harness).
+Generated 2026-07-02T07:33:06.547Z by `src/backtest` harness (branch alpha-harness).
 Modeling assumptions (slippage, SOL/USD approximation, candle tolerances, no shorting) are documented in src/backtest/README.md.
 
 ## Signal study — forward returns by wallet_count × pump × tier
@@ -27,7 +27,7 @@ Returns in %, relative to price_at_detection. "wmean" = winsorized mean (1%/99%)
 
 ## Horizon curve — candle-based forward returns, 1m → 12h
 
-Anchor t0 = last_trade_at (the trigger trade — the earliest moment the signal is detectable); baseline = candle close at t0 (stored price_at_detection is NOT used). Deduped to the first trigger per token × wallet-bucket: **1677** unique signals from 16761 rows, **1203** with candle coverage. med = median %, wm = winsorized mean % (1/99), wr = share > 0.
+Anchor t0 = last_trade_at (the trigger trade — the earliest moment the signal is detectable); baseline = candle close at t0 (stored price_at_detection is NOT used). Deduped to the first trigger per token × wallet-bucket: **1677** unique signals from 16761 rows, **1206** with candle coverage. med = median %, wm = winsorized mean % (1/99), wr = share > 0.
 
 ### 2 wallets, non-pump
 
@@ -49,17 +49,17 @@ Anchor t0 = last_trade_at (the trigger trade — the earliest moment the signal 
 
 | horizon | n | med % | wm % | wr |
 |---|---|---|---|---|
-| 1m | 719 | -1.2 | -2.6 | 42% |
-| 2m | 725 | -2.0 | -4.7 | 41% |
-| 5m | 753 | -6.6 | -8.9 | 34% |
-| 10m | 730 | -11.3 | -12.1 | 32% |
-| 15m | 707 | -13.7 | -12.4 | 29% |
-| 30m | 696 | -23.7 | -15.4 | 28% |
-| 1h | 637 | -28.7 | -18.2 | 27% |
-| 2h | 386 | -43.0 | -18.9 | 24% |
-| 4h | 678 | -55.0 | -34.5 | 17% |
-| 8h | 631 | -62.4 | -40.6 | 17% |
-| 12h | 615 | -64.2 | -42.4 | 16% |
+| 1m | 722 | -1.2 | -2.7 | 42% |
+| 2m | 728 | -2.0 | -4.8 | 41% |
+| 5m | 756 | -6.8 | -9.1 | 34% |
+| 10m | 733 | -11.4 | -12.3 | 32% |
+| 15m | 710 | -13.9 | -12.7 | 29% |
+| 30m | 697 | -23.9 | -15.5 | 28% |
+| 1h | 639 | -29.8 | -18.4 | 26% |
+| 2h | 387 | -43.0 | -19.0 | 24% |
+| 4h | 680 | -55.0 | -34.6 | 17% |
+| 8h | 633 | -62.4 | -40.7 | 17% |
+| 12h | 616 | -64.2 | -42.4 | 16% |
 
 ### 3 wallets, non-pump
 
@@ -157,6 +157,33 @@ Anchor t0 = last_trade_at (the trigger trade — the earliest moment the signal 
 | 8h | 18 | -64.6 | -55.0 | 11% |
 | 12h | 19 | -67.9 | -55.5 | 16% |
 
-## Replay backtest
+## Replay backtest (parameterized detection, $1000/trade)
 
-_Not yet run — execute `npx tsx src/backtest/cli.ts replay` once the candle fetch has finished, then re-run `report`._
+Time range 2026-04-05 → 2026-07-02, walk-forward split at 2026-05-19. 137676 simulated fills across grid; 2586 event-instances skipped for missing candles.
+
+Ranks are train→validation by total PnL; ⚠️ = top-quartile on train collapsing below median in validation (overfit).
+
+| # | detection (win/minWallets/minUsd/pump) | exit | n | med % | mean % | wmean % | win rate | PnL $ | maxDD $ | hold h | rank |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 30m/2w/$500/nonpump | TP+20%/SL-15%/5m | 3 | 16.40 | 5.41 | 5.63 | 66.7% | 162 | 166 | 0.0 | 62→1 |
+| 2 | 30m/2w/$500/nonpump | TP+20%/SL-15%/15m | 3 | 16.40 | 5.41 | 5.63 | 66.7% | 162 | 166 | 0.0 | 63→2 |
+| 3 | 30m/2w/$500/nonpump | TP+20%/SL-15%/30m | 3 | 16.40 | 5.41 | 5.63 | 66.7% | 162 | 166 | 0.0 | 64→3 |
+| 4 | 30m/2w/$500/nonpump | TP+20%/SL-15%/1h | 3 | 16.40 | 5.41 | 5.63 | 66.7% | 162 | 166 | 0.0 | 65→4 |
+| 5 | 30m/2w/$500/nonpump | TP+20%/SL-15%/2h | 3 | 16.40 | 5.41 | 5.63 | 66.7% | 162 | 166 | 0.0 | 66→5 |
+| 6 | 30m/2w/$500/nonpump | TP+20%/SL-15%/6h | 3 | 16.40 | 5.41 | 5.63 | 66.7% | 162 | 166 | 0.0 | 67→6 |
+| 7 | 30m/2w/$500/nonpump | TP+20%/SL-15%/12h | 3 | 16.40 | 5.41 | 5.63 | 66.7% | 162 | 166 | 0.0 | 68→7 |
+| 8 | 30m/2w/$500/nonpump | TP+20%/SL-30%/5m | 3 | 16.40 | 0.50 | 0.82 | 66.7% | 15 | 313 | 0.0 | 105→8 |
+| 9 | 30m/2w/$500/nonpump | TP+20%/SL-30%/15m | 3 | 16.40 | 0.50 | 0.82 | 66.7% | 15 | 313 | 0.0 | 106→9 |
+| 10 | 30m/2w/$500/nonpump | TP+20%/SL-30%/30m | 3 | 16.40 | 0.50 | 0.82 | 66.7% | 15 | 313 | 0.0 | 107→10 |
+| 11 | 30m/2w/$500/nonpump | TP+20%/SL-30%/1h | 3 | 16.40 | 0.50 | 0.82 | 66.7% | 15 | 313 | 0.0 | 108→11 |
+| 12 | 30m/2w/$500/nonpump | TP+20%/SL-30%/2h | 3 | 16.40 | 0.50 | 0.82 | 66.7% | 15 | 313 | 0.0 | 109→12 |
+| 13 | 30m/2w/$500/nonpump | TP+20%/SL-30%/6h | 3 | 16.40 | 0.50 | 0.82 | 66.7% | 15 | 313 | 0.0 | 110→13 |
+| 14 | 30m/2w/$500/nonpump | TP+20%/SL-30%/12h | 3 | 16.40 | 0.50 | 0.82 | 66.7% | 15 | 313 | 0.0 | 111→14 |
+| 15 | 10m/2w/$500/nonpump | TP+20%/SL-15%/5m | 2 | -0.08 | -0.08 | -0.08 | 50.0% | -2 | 166 | 0.0 | 41→15 |
+| 16 | 10m/2w/$500/nonpump | TP+20%/SL-15%/15m | 2 | -0.08 | -0.08 | -0.08 | 50.0% | -2 | 166 | 0.0 | 42→16 |
+| 17 | 10m/2w/$500/nonpump | TP+20%/SL-15%/30m | 2 | -0.08 | -0.08 | -0.08 | 50.0% | -2 | 166 | 0.0 | 43→17 |
+| 18 | 10m/2w/$500/nonpump | TP+20%/SL-15%/1h | 2 | -0.08 | -0.08 | -0.08 | 50.0% | -2 | 166 | 0.0 | 44→18 |
+| 19 | 10m/2w/$500/nonpump | TP+20%/SL-15%/2h | 2 | -0.08 | -0.08 | -0.08 | 50.0% | -2 | 166 | 0.0 | 45→19 |
+| 20 | 10m/2w/$500/nonpump | TP+20%/SL-15%/6h | 2 | -0.08 | -0.08 | -0.08 | 50.0% | -2 | 166 | 0.0 | 46→20 |
+
+_484 more configs in backtest/replay-results.json._
