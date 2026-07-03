@@ -128,6 +128,48 @@ export function rankWalletsOnTrain(
   return { elite, table };
 }
 
+export interface WalletRealizedStats {
+  wallet: string;
+  buySol: number;
+  sellSol: number;
+  ratio: number; // sellSol / buySol on train-half trades only
+}
+
+/**
+ * Rank wallets on REALIZED SOL flow before splitTs: sum(SELL sol)/sum(BUY sol)
+ * across all their trades. No candle dependency (uses the full trades table,
+ * not just sampled tokens), no lookahead (train half only). Elite = top
+ * quartile by ratio among wallets with >= minBuySol traded.
+ */
+export function rankWalletsByRealizedSol(
+  live: Database.Database,
+  splitTs: number,
+  minBuySol = 20
+): { elite: Set<string>; table: WalletRealizedStats[] } {
+  const rows = live
+    .prepare(
+      `SELECT wallet_address,
+              SUM(CASE WHEN trade_type = 'BUY' THEN amount_sol ELSE 0 END) AS buy_sol,
+              SUM(CASE WHEN trade_type = 'SELL' THEN amount_sol ELSE 0 END) AS sell_sol
+       FROM trades
+       WHERE block_time < ?
+       GROUP BY wallet_address`
+    )
+    .all(splitTs) as Array<{ wallet_address: string; buy_sol: number | null; sell_sol: number | null }>;
+  const table: WalletRealizedStats[] = rows
+    .map((r) => ({
+      wallet: r.wallet_address,
+      buySol: r.buy_sol ?? 0,
+      sellSol: r.sell_sol ?? 0,
+      ratio: (r.sell_sol ?? 0) / Math.max(r.buy_sol ?? 0, 1e-9)
+    }))
+    .filter((w) => w.buySol >= minBuySol)
+    .sort((a, b) => b.ratio - a.ratio);
+  const eliteCount = Math.max(1, Math.floor(table.length / 4));
+  const elite = new Set(table.slice(0, eliteCount).map((w) => w.wallet));
+  return { elite, table };
+}
+
 function fmt(x: number | undefined | null, digits = 1): string {
   if (x === undefined || x === null || Number.isNaN(x)) return "—";
   return x.toFixed(digits);
@@ -226,6 +268,14 @@ export function runM1Report(options: {
   const validElite = valid.filter((s) => elite.has(s.wallet));
   const validRest = valid.filter((s) => !elite.has(s.wallet));
 
+  // Walk-forward wallet selection on realized SOL flow (full trades table,
+  // train half only — no candle dependency, so every wallet is rankable).
+  const live2 = openLiveReadonly(options.liveDbPath);
+  const realized = rankWalletsByRealizedSol(live2, splitTs);
+  live2.close();
+  const validRealElite = valid.filter((s) => realized.elite.has(s.wallet));
+  const validRealRest = valid.filter((s) => !realized.elite.has(s.wallet));
+
   const lines: string[] = [];
   lines.push(`# m=1 study — first whale buy per token`);
   lines.push("");
@@ -243,7 +293,11 @@ export function runM1Report(options: {
   lines.push(...curveTable(`All signals (n=${usable.length})`, usable, retAt));
   lines.push(...curveTable(`Pump tokens`, usable.filter((s) => s.isPump), retAt));
   lines.push(...curveTable(`Non-pump tokens`, usable.filter((s) => !s.isPump), retAt));
-  lines.push(...curveTable(`Buy size ≥ $500`, usable.filter((s) => (s.usd ?? 0) >= 500), retAt));
+  lines.push(
+    `_No buy-size bucket: amount_usd is NULL on ~87% of first buys (webhook enrichment gap), ` +
+      `so USD-size filters are not measurable on this data._`
+  );
+  lines.push("");
 
   lines.push(`## Walk-forward wallet selection`);
   lines.push("");
@@ -255,6 +309,26 @@ export function runM1Report(options: {
   lines.push(...curveTable(`Elite wallets, valid half (n=${validElite.length})`, validElite, retAt));
   lines.push(...curveTable(`Non-elite wallets, valid half (n=${validRest.length})`, validRest, retAt));
 
+  lines.push(`## Walk-forward wallet selection — realized SOL flow`);
+  lines.push("");
+  lines.push(
+    `Wallets ranked on TRAIN-half realized flow across ALL their trades ` +
+      `(sum SELL sol / sum BUY sol, ≥20 SOL bought): ${realized.table.length} rankable, ` +
+      `top quartile = ${realized.elite.size} elite. Top-5 train ratios: ` +
+      realized.table
+        .slice(0, 5)
+        .map((w) => `${w.wallet.slice(0, 4)}…(${w.ratio.toFixed(2)})`)
+        .join(", ") +
+      `. Their VALID-half m=1 signals vs the rest:`
+  );
+  lines.push("");
+  lines.push(
+    ...curveTable(`Realized-elite wallets, valid half (n=${validRealElite.length})`, validRealElite, retAt)
+  );
+  lines.push(
+    ...curveTable(`Realized-non-elite wallets, valid half (n=${validRealRest.length})`, validRealRest, retAt)
+  );
+
   lines.push(`## Simulated trades ($${sizeUsd}/trade, entry +${latencySeconds}s, slippage both legs)`);
   lines.push("");
   lines.push(`| cohort | exit | n | med % | wm % | wr | PnL $ |`);
@@ -262,7 +336,8 @@ export function runM1Report(options: {
   const cohorts: Array<[string, M1Signal[]]> = [
     ["all/train", train],
     ["all/valid", valid],
-    ["elite/valid", validElite]
+    ["elite/valid", validElite],
+    ["realized-elite/valid", validRealElite]
   ];
   for (const [name, cohortSignals] of cohorts) {
     const events: DetectionEvent[] = cohortSignals.map((s) => ({
