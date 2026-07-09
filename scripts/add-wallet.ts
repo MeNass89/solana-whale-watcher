@@ -43,12 +43,54 @@ export function isQualifyingBuy(address: string, tx: HeliusTransaction): boolean
   );
 }
 
+function flagValue(argv: string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag);
+  return index >= 0 ? argv[index + 1] : undefined;
+}
+
+export function ensureFrozenRecipe(
+  db: ReturnType<typeof openDatabase>,
+  input: { address: string; takeProfitPct: number; stopLossPct: number; maxHoldSeconds: number; notionalUsd: number }
+): { id: string; created: boolean } {
+  const existing = db
+    .prepare("SELECT id FROM follower_recipes WHERE wallet_address = ? AND frozen = 1")
+    .get(input.address) as { id: string } | undefined;
+  if (existing) return { id: existing.id, created: false };
+  const id = [
+    input.address.slice(0, 8).toLowerCase(),
+    `tp${input.takeProfitPct}`,
+    `sl${Math.abs(input.stopLossPct)}`,
+    `${input.maxHoldSeconds}s`,
+    `${input.notionalUsd}`
+  ].join("-");
+  db.prepare(
+    `INSERT INTO follower_recipes (id, wallet_address, take_profit_pct, stop_loss_pct, max_hold_seconds, notional_usd, frozen)
+     VALUES (?, ?, ?, ?, ?, ?, 1)`
+  ).run(id, input.address, input.takeProfitPct, input.stopLossPct, input.maxHoldSeconds, input.notionalUsd);
+  return { id, created: true };
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const pinned = argv.includes("--pinned");
-  const positional = argv.filter((arg) => arg !== "--pinned");
+  const takeProfitPct = Number(flagValue(argv, "--tp") ?? 100);
+  const stopLossPct = Number(flagValue(argv, "--sl") ?? -30);
+  const maxHoldSeconds = Number(flagValue(argv, "--hold") ?? 3600);
+  const notionalUsd = Number(flagValue(argv, "--notional") ?? 1000);
+  const consumed = new Set<string>();
+  for (const flag of ["--tp", "--sl", "--hold", "--notional"]) {
+    const index = argv.indexOf(flag);
+    if (index >= 0) {
+      consumed.add(argv[index]);
+      if (argv[index + 1] !== undefined) consumed.add(argv[index + 1]);
+    }
+  }
+  const positional = argv.filter((arg) => arg !== "--pinned" && !consumed.has(arg));
   const [address, label = "", source = pinned ? "discovered" : "manual"] = positional;
   if (!address) {
-    throw new Error("Usage: npm run add-wallet -- <address> [label] [source] [--pinned]");
+    throw new Error("Usage: npm run add-wallet -- <address> [label] [source] [--pinned] [--tp <pct>] [--sl <pct>] [--hold <seconds>] [--notional <usd>]");
+  }
+  if (![takeProfitPct, stopLossPct, maxHoldSeconds, notionalUsd].every(Number.isFinite) || stopLossPct >= 0) {
+    throw new Error("Invalid recipe parameters: --tp/--hold/--notional must be numbers, --sl must be negative");
   }
 
   new PublicKey(address);
@@ -72,6 +114,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     state: pinned ? "ACTIVE" : "NEW",
     monitorPolicy: pinned ? "pinned" : "pool"
   });
+  if (pinned) {
+    const recipe = ensureFrozenRecipe(db, { address, takeProfitPct, stopLossPct, maxHoldSeconds, notionalUsd });
+    console.log(
+      recipe.created
+        ? `Frozen recipe created: ${recipe.id}`
+        : `Frozen recipe already exists (kept, recipes are immutable): ${recipe.id}`
+    );
+  }
   console.log(`Added wallet ${address}${pinned ? " as pinned follower" : ""}`);
 }
 

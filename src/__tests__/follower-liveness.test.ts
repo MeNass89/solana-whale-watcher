@@ -103,3 +103,19 @@ describe("add-wallet liveness buy fetch", () => {
     await expect(fetchCandidateBuys({ db, address: "wallet-a", sinceBlockTime: 1800, helius: {} as any })).rejects.toThrow(/HELIUS_API_KEY/);
   });
 });
+
+describe("add-wallet frozen recipe enrollment", () => {
+  it("creates one frozen recipe per pinned wallet and never replaces it", async () => {
+    const { ensureFrozenRecipe } = await import("../../scripts/add-wallet.js");
+    const { db } = dbWithWallet();
+
+    const first = ensureFrozenRecipe(db, { address: "wallet-a", takeProfitPct: 100, stopLossPct: -30, maxHoldSeconds: 3600, notionalUsd: 1000 });
+    const second = ensureFrozenRecipe(db, { address: "wallet-a", takeProfitPct: 50, stopLossPct: -15, maxHoldSeconds: 900, notionalUsd: 500 });
+
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.id).toBe(first.id);
+    const row = db.prepare("SELECT take_profit_pct, stop_loss_pct FROM follower_recipes WHERE wallet_address = 'wallet-a' AND frozen = 1").get() as { take_profit_pct: number; stop_loss_pct: number };
+    expect(row).toEqual({ take_profit_pct: 100, stop_loss_pct: -30 });
+  });
+});

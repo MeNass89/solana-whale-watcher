@@ -3,6 +3,8 @@ import path from "node:path";
 import { z } from "zod";
 
 function loadDotEnv(filePath = path.resolve(process.cwd(), ".env")): void {
+  // Tests must be hermetic: schema defaults only, never the machine's .env.
+  if (process.env.NODE_ENV === "test") return;
   if (!fs.existsSync(filePath)) return;
 
   for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
