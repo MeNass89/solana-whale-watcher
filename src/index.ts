@@ -64,6 +64,11 @@ async function main(): Promise<void> {
   const resolver = new TokenResolver(tokens);
   const engine = new ConvergenceEngine(trades, convergences, wallets, tokens, resolver, db);
   const follower = new FollowerEngine({ db, wallets, swaps: jupiterClient });
+  const pinnedWallets = wallets.listPinned();
+  logger.info(
+    { pinned: pinnedWallets.map((wallet) => wallet.address), count: pinnedWallets.length },
+    "follower engine started"
+  );
   const alerts = new AlertManager(convergences);
   tokenDecimalsResolver.configure({ db });
   riskEngine.configure(db);
