@@ -1,5 +1,5 @@
 import type { AppDatabase } from "../database.js";
-import type { WalletSource, WalletState } from "../../blockchain/types.js";
+import type { MonitorPolicy, WalletSource, WalletState } from "../../blockchain/types.js";
 
 export interface WalletRow {
   address: string;
@@ -11,6 +11,7 @@ export interface WalletRow {
   avg_roi: number | null;
   total_trades: number;
   active: number;
+  monitor_policy: MonitorPolicy;
   added_at: number;
   last_trade_at: number | null;
   last_scored_at: number | null;
@@ -27,6 +28,16 @@ export class WalletModel {
 
   listActive(): WalletRow[] {
     return this.db.prepare("SELECT * FROM wallets WHERE active = 1 ORDER BY added_at ASC").all() as WalletRow[];
+  }
+
+  listMonitored(): WalletRow[] {
+    return this.db
+      .prepare("SELECT * FROM wallets WHERE active = 1 OR monitor_policy = 'pinned' ORDER BY added_at ASC")
+      .all() as WalletRow[];
+  }
+
+  listPinned(): WalletRow[] {
+    return this.db.prepare("SELECT * FROM wallets WHERE monitor_policy = 'pinned' ORDER BY added_at ASC").all() as WalletRow[];
   }
 
   listAll(): WalletRow[] {
@@ -48,7 +59,7 @@ export class WalletModel {
       `UPDATE wallets SET state = 'ACTIVE'
        WHERE address IN (
          SELECT address FROM wallets
-         WHERE active = 1 AND state IN ('PROBATION', 'DORMANT', 'DEMOTED')
+         WHERE active = 1 AND monitor_policy = 'pool' AND state IN ('PROBATION', 'DORMANT', 'DEMOTED')
          ORDER BY score DESC
          LIMIT ?
        )`
@@ -56,31 +67,33 @@ export class WalletModel {
     return result.changes;
   }
 
-  upsert(input: { address: string; label?: string; source?: WalletSource; state?: WalletState; active?: boolean }): void {
+  upsert(input: { address: string; label?: string; source?: WalletSource; state?: WalletState; active?: boolean; monitorPolicy?: MonitorPolicy }): void {
     this.db
       .prepare(
-        `INSERT INTO wallets (address, label, source, state, active, wallet_class)
-         VALUES (@address, @label, @source, @state, @active, 'incomplete')
+        `INSERT INTO wallets (address, label, source, state, active, monitor_policy, wallet_class)
+         VALUES (@address, @label, @source, @state, @active, COALESCE(@monitorPolicy, 'pool'), 'incomplete')
          ON CONFLICT(address) DO UPDATE SET
            label = excluded.label,
            source = excluded.source,
            state = excluded.state,
-           active = excluded.active`
+           active = excluded.active,
+           monitor_policy = COALESCE(@monitorPolicy, wallets.monitor_policy)`
       )
       .run({
         address: input.address,
         label: input.label ?? null,
         source: input.source ?? "manual",
         state: input.state ?? "NEW",
-        active: input.active === false ? 0 : 1
+        active: input.active === false ? 0 : 1,
+        monitorPolicy: input.monitorPolicy ?? null
       });
   }
 
-  insertIfMissing(input: { address: string; label?: string; source?: WalletSource; state?: WalletState; active?: boolean }): boolean {
+  insertIfMissing(input: { address: string; label?: string; source?: WalletSource; state?: WalletState; active?: boolean; monitorPolicy?: MonitorPolicy }): boolean {
     const result = this.db
       .prepare(
-        `INSERT INTO wallets (address, label, source, state, active, wallet_class)
-         VALUES (@address, @label, @source, @state, @active, 'incomplete')
+        `INSERT INTO wallets (address, label, source, state, active, monitor_policy, wallet_class)
+         VALUES (@address, @label, @source, @state, @active, @monitorPolicy, 'incomplete')
          ON CONFLICT(address) DO NOTHING`
       )
       .run({
@@ -88,12 +101,13 @@ export class WalletModel {
         label: input.label ?? null,
         source: input.source ?? "manual",
         state: input.state ?? "NEW",
-        active: input.active === false ? 0 : 1
+        active: input.active === false ? 0 : 1,
+        monitorPolicy: input.monitorPolicy ?? "pool"
       });
     return result.changes > 0;
   }
 
-  update(address: string, input: Partial<{ label: string; source: WalletSource; state: WalletState; active: boolean }>): void {
+  update(address: string, input: Partial<{ label: string; source: WalletSource; state: WalletState; active: boolean; monitorPolicy: MonitorPolicy }>): void {
     const current = this.find(address);
     if (!current) throw new Error("Wallet not found");
     this.upsert({
@@ -101,7 +115,8 @@ export class WalletModel {
       label: input.label ?? current.label ?? undefined,
       source: input.source ?? current.source ?? "manual",
       state: input.state ?? current.state,
-      active: input.active ?? (current.active === 1)
+      active: input.active ?? (current.active === 1),
+      monitorPolicy: input.monitorPolicy ?? current.monitor_policy
     });
   }
 
@@ -155,6 +170,7 @@ export class WalletModel {
       .prepare(
         `SELECT * FROM wallets
          WHERE active = 1 AND state IN ('NEW', 'PROBATION', 'ACTIVE', 'DORMANT', 'DEMOTED')
+           AND monitor_policy = 'pool'
          ORDER BY
            CASE state WHEN 'NEW' THEN 0 WHEN 'ACTIVE' THEN 1 WHEN 'PROBATION' THEN 2 ELSE 3 END,
            last_scored_at ASC NULLS FIRST,

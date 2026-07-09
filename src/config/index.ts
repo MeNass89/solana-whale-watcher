@@ -42,6 +42,7 @@ const envSchema = z.object({
     .transform((value) => value === "true"),
   EXECUTION_MODE: z.enum(["paper", "live"]).default("paper"),
   JITO_BLOCK_ENGINE_URL: z.string().url().default("https://mainnet.block-engine.jito.wtf"),
+  JUPITER_API_KEY: z.string().default(""),
   PAPER_INITIAL_BALANCE: z.coerce.number().positive().default(10_000),
   SOLANA_WALLET_PUBLIC: z.string().default(""),
   SOLANA_WALLET_PRIVATE: z.string().default("")
@@ -102,6 +103,7 @@ export const config = {
     enabled: env.EXECUTION_ENABLED,
     mode: env.EXECUTION_MODE,
     jitoBlockEngineUrl: env.JITO_BLOCK_ENGINE_URL,
+    jupiterApiKey: env.JUPITER_API_KEY,
     paperInitialBalance: env.PAPER_INITIAL_BALANCE,
     walletPublic: env.SOLANA_WALLET_PUBLIC,
     walletPrivate: env.SOLANA_WALLET_PRIVATE

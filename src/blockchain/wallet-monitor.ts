@@ -8,8 +8,12 @@ export class WalletMonitor {
     private readonly helius = new HeliusClient()
   ) {}
 
+  addressesForWebhook(): string[] {
+    return this.wallets.listMonitored().map((wallet) => wallet.address);
+  }
+
   async syncWebhook(): Promise<string | void> {
-    const addresses = this.wallets.listActive().map((wallet) => wallet.address);
+    const addresses = this.addressesForWebhook();
     if (addresses.length === 0) throw new Error("No active wallets to monitor");
     if (config.helius.webhookId) {
       await this.helius.updateWebhook(config.helius.webhookId, addresses, config.server.publicWebhookUrl);

@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS idx_trades_type_time ON trades(trade_type, block_time
 CREATE TABLE IF NOT EXISTS wallets (
   address TEXT PRIMARY KEY,
   label TEXT,
-  source TEXT CHECK(source IN ('manual','axiom','nansen','dune','discovered','co-buyer')),
+  source TEXT CHECK(source IN ('manual','axiom','nansen','dune','discovered','co-buyer','solanatracker')),
   score REAL DEFAULT 50.0,
   state TEXT CHECK(state IN ('NEW','PROBATION','ACTIVE','DORMANT','DEMOTED','PRUNED','ARCHIVED')) DEFAULT 'NEW',
   win_rate REAL,

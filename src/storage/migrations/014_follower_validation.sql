@@ -1,0 +1,3 @@
+-- Implemented idempotently in src/storage/database.ts because SQLite cannot
+-- ADD COLUMN IF NOT EXISTS for wallets.monitor_policy and follower position
+-- review columns.

@@ -11,6 +11,7 @@ import { registerWalletRoutes } from "./routes/wallets.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 import type { AlertManager } from "../engine/alert-manager.js";
 import type { ConvergenceEngine } from "../engine/convergence.js";
+import type { FollowerEngine } from "../engine/follower.js";
 import type { AppDatabase } from "../storage/database.js";
 import type { ConvergenceModel } from "../storage/models/convergences.js";
 import type { TradeModel } from "../storage/models/trades.js";
@@ -23,6 +24,7 @@ export interface ServerDeps {
   trades: TradeModel;
   convergences: ConvergenceModel;
   engine: ConvergenceEngine;
+  follower: FollowerEngine;
   alerts: AlertManager;
 }
 

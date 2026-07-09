@@ -138,6 +138,45 @@ export class HeliusClient implements IChainMonitor {
     return results;
   }
 
+  async getWalletTransactionsSince(address: string, sinceBlockTime: number): Promise<HeliusTransaction[]> {
+    if (!this.apiKey) throw new Error("HELIUS_API_KEY is required");
+    const results: HeliusTransaction[] = [];
+    let beforeSignature: string | undefined;
+
+    while (true) {
+      let url = `${HELIUS_BASE_URL}/v0/addresses/${address}/transactions?api-key=${this.apiKey}&limit=100`;
+      if (beforeSignature) url += `&before=${beforeSignature}`;
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        if (response.status === 429 || response.status === 401 || response.status === 403 || response.status >= 500) {
+          throw new HeliusRequestError(
+            response.status,
+            `Helius getWalletTransactionsSince failed (${response.status})`,
+            parseRetryAfter(response.headers.get("retry-after"))
+          );
+        }
+        if (response.status === 404) {
+          logger.warn({ address, status: response.status, beforeSignature }, "getWalletTransactionsSince: wallet not found, stopping pagination");
+          break;
+        }
+        throw new HeliusRequestError(
+          response.status,
+          `Helius getWalletTransactionsSince failed (${response.status})`,
+          parseRetryAfter(response.headers.get("retry-after"))
+        );
+      }
+
+      const batch = (await response.json()) as HeliusTransaction[];
+      if (batch.length === 0) break;
+      results.push(...batch.filter((tx) => tx.timestamp >= sinceBlockTime));
+      beforeSignature = batch[batch.length - 1].signature;
+      if (batch.length < 100 || batch[batch.length - 1].timestamp < sinceBlockTime) break;
+    }
+
+    return results;
+  }
+
   async getAsset(mint: string): Promise<unknown> {
     if (!this.apiKey) return null;
     const response = await fetch(`${HELIUS_RPC_URL}/?api-key=${this.apiKey}`, {

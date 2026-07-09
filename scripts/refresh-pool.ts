@@ -1,14 +1,13 @@
 import { PublicKey } from "@solana/web3.js";
+import { fileURLToPath } from "node:url";
 import { openDatabase } from "../src/storage/database.js";
+import type { AppDatabase } from "../src/storage/database.js";
 import { WalletModel } from "../src/storage/models/wallets.js";
 import { WalletMonitor } from "../src/blockchain/wallet-monitor.js";
 import { HeliusRequestError } from "../src/blockchain/helius-client.js";
 import { logger } from "../src/utils/logger.js";
 
 const API_KEY = process.env.SOLANATRACKER_API_KEY;
-if (!API_KEY) {
-  throw new Error("SOLANATRACKER_API_KEY missing from environment");
-}
 
 const POOL_SIZE = 50;
 const TRENDING_TOKEN_COUNT = 10;
@@ -37,6 +36,7 @@ type TrendingToken = { mint?: string; address?: string; token?: { mint?: string 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function st<T>(path: string, attempt = 1): Promise<T> {
+  if (!API_KEY) throw new Error("SOLANATRACKER_API_KEY missing from environment");
   const res = await fetch(`https://data.solanatracker.io${path}`, {
     headers: { "x-api-key": API_KEY! }
   });
@@ -84,6 +84,34 @@ function isValidAddress(address: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+export function applyPoolRefresh(db: AppDatabase, wallets: WalletModel, pool: Wallet[]): void {
+  const txn = db.transaction(() => {
+    db.prepare("UPDATE wallets SET active = 0 WHERE monitor_policy = 'pool'").run();
+    for (const w of pool) {
+      const existing = wallets.find(w.wallet);
+      if (existing?.monitor_policy === "pinned") continue;
+      wallets.upsert({
+        address: w.wallet,
+        label: `realized=$${Math.round(w.summary?.realized ?? 0)} win=${(w.summary?.winPercentage ?? 0).toFixed(1)}%`,
+        source: "solanatracker",
+        state: "ACTIVE",
+        active: true,
+        monitorPolicy: "pool"
+      });
+    }
+  });
+  txn();
+}
+
+export function assertPinnedWebhookInvariant(wallets: WalletModel, webhookAddresses: string[]): void {
+  const webhookSet = new Set(webhookAddresses);
+  const missing = wallets.listPinned().map((wallet) => wallet.address).filter((address) => !webhookSet.has(address));
+  if (missing.length > 0) {
+    logger.error({ missing }, "refresh-pool: pinned wallet missing from Helius webhook address set");
+    throw new Error(`Pinned wallet missing from webhook address list: ${missing.join(",")}`);
   }
 }
 
@@ -135,34 +163,23 @@ async function main() {
   const db = openDatabase();
   const wallets = new WalletModel(db);
 
-  const txn = db.transaction(() => {
-    db.prepare("UPDATE wallets SET active = 0").run();
-    for (const w of pool) {
-      wallets.upsert({
-        address: w.wallet,
-        label: `realized=$${Math.round(w.summary?.realized ?? 0)} win=${(w.summary?.winPercentage ?? 0).toFixed(1)}%`,
-        source: "discovered",
-        state: "ACTIVE",
-        active: true
-      });
-    }
-  });
-  txn();
+  applyPoolRefresh(db, wallets, pool);
 
   const activeCount = wallets.countActive();
   logger.info({ activeCount }, "refresh-pool: database updated");
 
   const monitor = new WalletMonitor(wallets);
-  await syncWebhookWithRetry(monitor);
+  const syncedAddresses = await syncWebhookWithRetry(monitor);
+  assertPinnedWebhookInvariant(wallets, syncedAddresses);
 }
 
-async function syncWebhookWithRetry(monitor: WalletMonitor): Promise<void> {
+async function syncWebhookWithRetry(monitor: WalletMonitor): Promise<string[]> {
   const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       await monitor.syncWebhook();
       logger.info({ attempt }, "refresh-pool: Helius webhook synced");
-      return;
+      return monitor.addressesForWebhook();
     } catch (err) {
       const isHelius = err instanceof HeliusRequestError;
       const status = isHelius ? err.status : undefined;
@@ -183,9 +200,12 @@ async function syncWebhookWithRetry(monitor: WalletMonitor): Promise<void> {
       await sleep(backoffMs);
     }
   }
+  return monitor.addressesForWebhook();
 }
 
-main().catch((err) => {
-  logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "refresh-pool: failed");
-  process.exit(1);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "refresh-pool: failed");
+    process.exit(1);
+  });
+}

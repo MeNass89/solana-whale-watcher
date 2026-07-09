@@ -3,6 +3,7 @@ import { verifyHeliusHmac } from "../middleware/hmac.js";
 import { parseEnhancedTransactions, isRapidReversal } from "../../blockchain/transaction-parser.js";
 import type { AlertManager } from "../../engine/alert-manager.js";
 import type { ConvergenceEngine } from "../../engine/convergence.js";
+import type { FollowerEngine } from "../../engine/follower.js";
 import type { AppDatabase } from "../../storage/database.js";
 import type { ConvergenceModel } from "../../storage/models/convergences.js";
 import type { TradeModel } from "../../storage/models/trades.js";
@@ -41,13 +42,14 @@ export async function registerWebhookRoutes(
     trades: TradeModel;
     convergences: ConvergenceModel;
     engine: ConvergenceEngine;
+    follower: FollowerEngine;
     alerts: AlertManager;
   }
 ): Promise<void> {
   const whaleDiscord = new DiscordAlerter();
 
   app.post("/api/webhooks/helius", { preHandler: verifyHeliusHmac }, async (request, reply) => {
-    const activeWallets = new Set(deps.wallets.listActive().map((wallet) => wallet.address));
+    const activeWallets = new Set(deps.wallets.listMonitored().map((wallet) => wallet.address));
     const solPriceUsd = await cachedSolPriceUsd();
     const parsedTrades = parseEnhancedTransactions(request.body, activeWallets, solPriceUsd);
 
@@ -63,6 +65,7 @@ export async function registerWebhookRoutes(
       if (!inserted) continue;
       deps.wallets.markTrade(trade.walletAddress, trade.blockTime);
       logger.info({ wallet: logWallet(trade.walletAddress), token: trade.tokenMint, type: trade.tradeType }, "trade ingested");
+      await deps.follower.onTrade(inserted);
 
       const wallet = deps.wallets.find(trade.walletAddress);
       if (wallet && wallet.score >= WHALE_ALERT_MIN_SCORE) {

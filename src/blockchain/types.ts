@@ -1,6 +1,7 @@
 export type Chain = "solana";
 export type TradeType = "BUY" | "SELL";
-export type WalletSource = "manual" | "axiom" | "nansen" | "dune" | "discovered" | "co-buyer";
+export type WalletSource = "manual" | "axiom" | "nansen" | "dune" | "discovered" | "co-buyer" | "solanatracker";
+export type MonitorPolicy = "pool" | "pinned";
 export type WalletState = "NEW" | "PROBATION" | "ACTIVE" | "DORMANT" | "DEMOTED" | "PRUNED" | "ARCHIVED";
 export type AlertTier = "CRITICAL" | "NOTABLE" | "WATCH";
 

@@ -15,11 +15,15 @@ const JUPITER_QUOTE_URL = "https://api.jup.ag/swap/v1/quote";
 const JUPITER_SWAP_URL = "https://api.jup.ag/swap/v1/swap";
 const QUOTE_MAX_AGE_MS = 3_000;
 const SEND_INTERVAL_MS = 500;
+const JUPITER_MIN_INTERVAL_MS = 2_000;
+const JUPITER_MAX_ATTEMPTS = 3;
 const CONFIRM_TIMEOUT_MS = 60_000;
 const TIP_HARD_CAP_LAMPORTS = 15_000_000;
 const MIN_SANE_PRICE_USD = 1e-15;
 const MAX_SANE_PRICE_USD = 1e6;
 const MAX_PRICE_CHANGE_RATIO = 100;
+let nextJupiterRequestAt = 0;
+let jupiterQueue: Promise<void> = Promise.resolve();
 
 function isSanePrice(price: number): boolean {
   return Number.isFinite(price) && price > MIN_SANE_PRICE_USD && price < MAX_SANE_PRICE_USD;
@@ -70,11 +74,10 @@ interface JupiterSwapResponse {
 }
 
 export class JupiterClient {
-  private readonly router: RpcRouter;
+  private router: RpcRouter | null = null;
   private readonly wallet: Keypair | null;
 
   constructor() {
-    this.router = getRpcRouter();
     this.wallet =
       config.execution.enabled && config.execution.mode === "live" ? parseWalletKeypair(config.execution.walletPrivate) : null;
   }
@@ -96,7 +99,7 @@ export class JupiterClient {
       url.searchParams.set("outputMint", mint);
       url.searchParams.set("amount", "1000000");
       url.searchParams.set("slippageBps", "300");
-      const response = await fetch(url);
+      const response = await jupiterFetch(url);
       if (!response.ok) {
         logger.warn({ mint, status: response.status }, "Jupiter price request failed");
         return null;
@@ -113,6 +116,45 @@ export class JupiterClient {
       return price;
     } catch (error) {
       logger.warn({ mint, err: error instanceof Error ? error.message : String(error) }, "getPriceUsd: request failed");
+      return null;
+    }
+  }
+
+  async getExitPriceUsd(mint: string, amountToken: number): Promise<number | null> {
+    if (mint === USDC_MINT) return 1;
+    if (!Number.isFinite(amountToken) || amountToken <= 0) return null;
+    try {
+      const decimals = await this.tokenDecimals(mint);
+      const rawAmount = BigInt(Math.floor(amountToken * 10 ** decimals));
+      if (rawAmount < 1n) return null;
+      const url = new URL(JUPITER_QUOTE_URL);
+      url.searchParams.set("inputMint", mint);
+      url.searchParams.set("outputMint", USDC_MINT);
+      url.searchParams.set("amount", rawAmount.toString());
+      url.searchParams.set("slippageBps", "300");
+      url.searchParams.set("dynamicSlippage", "true");
+      url.searchParams.set("maxAccounts", "64");
+      url.searchParams.set("restrictIntermediateTokens", "true");
+      const response = await jupiterFetch(url);
+      if (!response.ok) {
+        logger.warn({ mint, amountToken, status: response.status }, "Jupiter exit price request failed");
+        return null;
+      }
+      const raw = (await response.json()) as Record<string, unknown>;
+      const outAmount = Number(raw.outAmount);
+      if (!outAmount || !Number.isFinite(outAmount)) {
+        logger.warn({ mint, amountToken }, "Jupiter exit price request returned no route");
+        return null;
+      }
+      const usdcOut = outAmount / 1_000_000;
+      const price = usdcOut / amountToken;
+      if (!isSanePrice(price)) {
+        logger.warn({ mint, amountToken, price }, "getExitPriceUsd: price outside sane bounds, returning null");
+        return null;
+      }
+      return price;
+    } catch (error) {
+      logger.warn({ mint, amountToken, err: error instanceof Error ? error.message : String(error) }, "getExitPriceUsd: request failed");
       return null;
     }
   }
@@ -160,7 +202,7 @@ export class JupiterClient {
     url.searchParams.set("maxAccounts", "64");
     url.searchParams.set("restrictIntermediateTokens", "true");
 
-    const response = await fetch(url);
+    const response = await jupiterFetch(url);
     if (!response.ok) throw new Error(`Jupiter quote failed: ${response.status} ${await response.text()}`);
 
     const raw = (await response.json()) as Record<string, unknown>;
@@ -272,9 +314,9 @@ export class JupiterClient {
 
   private async buildSwapTransaction(quote: JupiterQuote, params: SwapParams): Promise<JupiterSwapResponse> {
     if (!this.wallet) throw new Error("Wallet not configured");
-    const response = await fetch(JUPITER_SWAP_URL, {
+    const response = await jupiterFetch(JUPITER_SWAP_URL, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jupiterHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         quoteResponse: quote.raw,
         userPublicKey: this.wallet.publicKey.toBase58(),
@@ -327,7 +369,7 @@ export class JupiterClient {
   private async waitForConfirmation(signature: string): Promise<void> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < CONFIRM_TIMEOUT_MS) {
-      const status = await this.router.call("getSignatureStatuses", (c) => c.getSignatureStatuses([signature]));
+      const status = await this.requireRouter().call("getSignatureStatuses", (c) => c.getSignatureStatuses([signature]));
       const value = status.value[0];
       if (value?.err) throw new Error(`Swap failed on-chain: ${JSON.stringify(value.err)}`);
       if (value?.confirmationStatus === "confirmed" || value?.confirmationStatus === "finalized") return;
@@ -339,8 +381,8 @@ export class JupiterClient {
   private async tokenBalance(mint: string): Promise<number> {
     if (!this.wallet) return 0;
     const pubkey = this.wallet.publicKey;
-    if (mint === SOL_MINT) return this.router.call("getBalance", (c) => c.getBalance(pubkey));
-    const accounts = await this.router.call("getParsedTokenAccountsByOwner", (c) =>
+    if (mint === SOL_MINT) return this.requireRouter().call("getBalance", (c) => c.getBalance(pubkey));
+    const accounts = await this.requireRouter().call("getParsedTokenAccountsByOwner", (c) =>
       c.getParsedTokenAccountsByOwner(pubkey, { mint: new PublicKey(mint) })
     );
     return accounts.value.reduce((sum, account) => {
@@ -350,7 +392,7 @@ export class JupiterClient {
   }
 
   private async assertNetworkHealthy(): Promise<void> {
-    const samples = await this.router.call("getRecentPerformanceSamples", (c) => c.getRecentPerformanceSamples(1));
+    const samples = await this.requireRouter().call("getRecentPerformanceSamples", (c) => c.getRecentPerformanceSamples(1));
     const sample = samples[0];
     if (!sample) return;
     const tps = sample.numTransactions / sample.samplePeriodSecs;
@@ -386,6 +428,11 @@ export class JupiterClient {
   // No silent default — a guessed scale corrupts every downstream amount.
   private async tokenDecimals(mint: string): Promise<number> {
     return tokenDecimalsResolver.resolve(mint);
+  }
+
+  private requireRouter(): RpcRouter {
+    this.router ??= getRpcRouter();
+    return this.router;
   }
 }
 
@@ -433,6 +480,86 @@ function numberValue(value: unknown): number | undefined {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function jupiterFetch(input: URL | string, init: RequestInit = {}): Promise<Response> {
+  let lastResponse: Response | null = null;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= JUPITER_MAX_ATTEMPTS; attempt += 1) {
+    await throttleJupiter();
+    let response: Response;
+    try {
+      response = await fetch(input, {
+        ...init,
+        headers: jupiterHeaders(init.headers),
+        signal: combinedSignal(init.signal, AbortSignal.timeout(10_000))
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt === JUPITER_MAX_ATTEMPTS) throw error;
+      const delayMs = Math.min(8_000, 1_000 * 2 ** (attempt - 1));
+      logger.warn({ err: error instanceof Error ? error.message : String(error), attempt, delayMs }, "Jupiter request threw; backing off");
+      await sleep(delayMs);
+      continue;
+    }
+    if (response.ok || !isRetryableJupiterStatus(response.status) || attempt === JUPITER_MAX_ATTEMPTS) return response;
+    lastResponse = response;
+    const delayMs = retryAfterMs(response) ?? Math.min(8_000, 1_000 * 2 ** (attempt - 1));
+    logger.warn({ status: response.status, attempt, delayMs }, "Jupiter request failed; backing off");
+    await sleep(delayMs);
+  }
+  if (lastError) throw lastError;
+  return lastResponse!;
+}
+
+function combinedSignal(a: AbortSignal | null | undefined, b: AbortSignal): AbortSignal {
+  if (!a) return b;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([a, b]);
+  if (a.aborted) return a;
+  if (b.aborted) return b;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  a.addEventListener("abort", abort, { once: true });
+  b.addEventListener("abort", abort, { once: true });
+  return controller.signal;
+}
+
+function throttleJupiter(): Promise<void> {
+  const scheduled = jupiterQueue.then(async () => {
+    const now = Date.now();
+    const waitMs = Math.max(0, nextJupiterRequestAt - now);
+    if (waitMs > 0) await sleep(waitMs);
+    nextJupiterRequestAt = Date.now() + JUPITER_MIN_INTERVAL_MS;
+  });
+  jupiterQueue = scheduled.catch(() => {});
+  return scheduled;
+}
+
+function jupiterHeaders(input?: HeadersInit): HeadersInit {
+  const headers: Record<string, string> = {};
+  if (input instanceof Headers) {
+    input.forEach((value, key) => { headers[key] = value; });
+  } else if (Array.isArray(input)) {
+    for (const [key, value] of input) headers[key] = value;
+  } else if (input) {
+    Object.assign(headers, input);
+  }
+  if (config.execution.jupiterApiKey) headers["x-api-key"] = config.execution.jupiterApiKey;
+  return headers;
+}
+
+function isRetryableJupiterStatus(status: number): boolean {
+  return status === 429 || status === 408 || status >= 500;
+}
+
+function retryAfterMs(response: Response): number | null {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(raw);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  return null;
 }
 
 function base58Encode(bytes: Uint8Array): string {

@@ -8,11 +8,13 @@ import { TokenResolver } from "./blockchain/token-resolver.js";
 import { WalletMonitor } from "./blockchain/wallet-monitor.js";
 import { AlertManager } from "./engine/alert-manager.js";
 import { ConvergenceEngine } from "./engine/convergence.js";
+import { FollowerEngine } from "./engine/follower.js";
 import { checkWebhookHealth } from "./jobs/webhook-health.js";
 import { runPriceTracker } from "./jobs/price-tracker.js";
 import { runTokenMetadata } from "./jobs/token-metadata.js";
 import { runWalletScorer } from "./jobs/wallet-scorer.js";
 import { runLeaderboardRefresh } from "./jobs/leaderboard-refresh.js";
+import { checkFollowerWalletDeaths } from "./jobs/follower-death-detector.js";
 import { openDatabase } from "./storage/database.js";
 import { ConvergenceModel } from "./storage/models/convergences.js";
 import { TokenModel } from "./storage/models/tokens.js";
@@ -22,6 +24,7 @@ import { logger } from "./utils/logger.js";
 import { positionManager, type PositionRow } from "./execution/position-manager.js";
 import { riskEngine } from "./execution/risk-engine.js";
 import { tradeExecutor } from "./execution/trade-executor.js";
+import { jupiterClient } from "./execution/jupiter-client.js";
 import { tokenDecimalsResolver } from "./blockchain/token-decimals.js";
 import { stopRecentTradesCleanup } from "./blockchain/transaction-parser.js";
 import { getRpcRouter } from "./blockchain/rpc-router.js";
@@ -60,6 +63,7 @@ async function main(): Promise<void> {
   const tokens = new TokenModel(db);
   const resolver = new TokenResolver(tokens);
   const engine = new ConvergenceEngine(trades, convergences, wallets, tokens, resolver, db);
+  const follower = new FollowerEngine({ db, wallets, swaps: jupiterClient });
   const alerts = new AlertManager(convergences);
   tokenDecimalsResolver.configure({ db });
   riskEngine.configure(db);
@@ -172,6 +176,20 @@ async function main(): Promise<void> {
     });
   }, 5 * 60 * 1000);
 
+  setInterval(() => {
+    follower.checkOpenPositions().catch((err) => {
+      logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "follower position check failed");
+    });
+  }, 30 * 1000);
+
+  setInterval(() => {
+    try {
+      checkFollowerWalletDeaths(db, wallets);
+    } catch (err) {
+      logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "follower wallet-death detector failed");
+    }
+  }, 6 * 60 * 60 * 1000);
+
   const metadataJob = () => runTokenMetadata(db, tokens).catch((err) => {
     logger.error({ err: err instanceof Error ? err : new Error(String(err)) }, "token-metadata: job failed");
   });
@@ -188,7 +206,7 @@ async function main(): Promise<void> {
     try { db.pragma("wal_checkpoint(PASSIVE)"); } catch {}
   }, 4 * 60 * 60 * 1000);
 
-  const app = await buildServer({ db, wallets, trades, convergences, engine, alerts });
+  const app = await buildServer({ db, wallets, trades, convergences, engine, follower, alerts });
 
   await app.listen({ host: config.server.host, port: config.server.port });
   logger.info({ host: config.server.host, port: config.server.port }, "server started");
@@ -207,7 +225,10 @@ function seedWallets(wallets: WalletModel): void {
       wallets.upsert({
         address: wallet.address,
         label: wallet.label,
-        source: wallet.source === "axiom" || wallet.source === "nansen" || wallet.source === "dune" ? wallet.source : "manual"
+        source: wallet.source === "axiom" || wallet.source === "nansen" || wallet.source === "dune" || wallet.source === "discovered"
+          ? wallet.source
+          : "manual",
+        monitorPolicy: wallet.source === "discovered" ? "pinned" : "pool"
       });
       added++;
     } catch (error) {
