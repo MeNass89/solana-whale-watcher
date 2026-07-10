@@ -143,12 +143,20 @@ export class HeliusClient implements IChainMonitor {
     const results: HeliusTransaction[] = [];
     let beforeSignature: string | undefined;
 
+    let retries429 = 0;
     while (true) {
       let url = `${HELIUS_BASE_URL}/v0/addresses/${address}/transactions?api-key=${this.apiKey}&limit=100`;
       if (beforeSignature) url += `&before=${beforeSignature}`;
 
       const response = await fetch(url);
       if (!response.ok) {
+        if (response.status === 429 && retries429 < 5) {
+          retries429 += 1;
+          const waitSeconds = parseRetryAfter(response.headers.get("retry-after")) ?? 2 * retries429;
+          logger.warn({ address, waitSeconds, attempt: retries429 }, "getWalletTransactionsSince: 429, backing off");
+          await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+          continue;
+        }
         if (response.status === 429 || response.status === 401 || response.status === 403 || response.status >= 500) {
           throw new HeliusRequestError(
             response.status,
@@ -167,6 +175,7 @@ export class HeliusClient implements IChainMonitor {
         );
       }
 
+      retries429 = 0;
       const batch = (await response.json()) as HeliusTransaction[];
       if (batch.length === 0) break;
       results.push(...batch.filter((tx) => tx.timestamp >= sinceBlockTime));
