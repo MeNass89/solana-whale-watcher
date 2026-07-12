@@ -5,6 +5,17 @@ import { logger } from "../utils/logger.js";
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
+// Circuit breaker: enrollment gates can't catch a wallet that changes regime
+// after enrollment (observed live 2026-07-12: 8aKGXJkq went from ~1 buy/day
+// to 200+/day and bled -55k paper before manual intervention). Either trip
+// marks the wallet DORMANT until a human revives it.
+const BREAKER_MAX_ENTRIES_24H = 12;
+const BREAKER_MAX_CONSECUTIVE_STOPS = 8;
+
+type FollowerAlerter = {
+  send(payload: Record<string, unknown>, tier: "CRITICAL" | "NOTABLE" | "WATCH"): Promise<boolean>;
+};
+
 type FollowerSwapClient = {
   executeSwap(params: {
     inputMint: string;
@@ -46,13 +57,15 @@ export class FollowerEngine {
   private readonly db: AppDatabase;
   private readonly wallets: WalletModel;
   private readonly swaps: FollowerSwapClient;
+  private readonly alerts?: FollowerAlerter;
   private readonly entriesInFlight = new Set<string>();
   private checksInFlight = false;
 
-  constructor(input: { db: AppDatabase; wallets: WalletModel; swaps: FollowerSwapClient }) {
+  constructor(input: { db: AppDatabase; wallets: WalletModel; swaps: FollowerSwapClient; alerts?: FollowerAlerter }) {
     this.db = input.db;
     this.wallets = input.wallets;
     this.swaps = input.swaps;
+    this.alerts = input.alerts;
   }
 
   async onTrade(trade: TradeRow, webhookReceivedAt = Math.floor(Date.now() / 1000)): Promise<void> {
@@ -62,6 +75,11 @@ export class FollowerEngine {
     const recipe = this.recipeForWallet(trade.wallet_address);
     if (!recipe) {
       logger.warn({ wallet: trade.wallet_address }, "follower: pinned wallet has no frozen recipe");
+      return;
+    }
+    const tripped = this.circuitBreakerReason(trade.wallet_address, webhookReceivedAt);
+    if (tripped) {
+      this.tripCircuitBreaker(trade, recipe, webhookReceivedAt, tripped);
       return;
     }
     if (this.hasOpenPosition(trade.wallet_address, trade.token_mint)) {
@@ -129,13 +147,17 @@ export class FollowerEngine {
       const fillPrice = recipe.notional_usd / result.outputAmount;
       const respondedAt = Math.floor(Date.now() / 1000);
       const applyFill = this.db.transaction(() => {
+        // Re-checked at fill time: the swap is async, so the breaker can trip
+        // (or a concurrent fill can cross the cadence cap) while this entry is
+        // in flight. The transaction is synchronous on a single connection,
+        // which makes this check atomic with the position insert.
+        const walletNow = this.wallets.find(trade.wallet_address);
+        if (walletNow?.state === "DORMANT" || this.circuitBreakerReason(trade.wallet_address, respondedAt)) {
+          this.markSkipped(signalId, executionId, "CIRCUIT_BREAKER", requestedAt, respondedAt);
+          return;
+        }
         if (this.openPositionCount(trade.wallet_address) >= 3) {
-          this.db
-            .prepare("UPDATE follower_executions SET status = 'SKIPPED', reason = ?, quote_responded_at = ?, closed_at = ? WHERE id = ?")
-            .run("CONCURRENCY_CAP", respondedAt, respondedAt, executionId);
-          this.db
-            .prepare("UPDATE follower_signals SET status = 'SKIPPED', skip_reason = ?, quote_requested_at = ?, quote_responded_at = ? WHERE id = ?")
-            .run("CONCURRENCY_CAP", requestedAt, respondedAt, signalId);
+          this.markSkipped(signalId, executionId, "CONCURRENCY_CAP", requestedAt, respondedAt);
           return;
         }
         this.db
@@ -202,6 +224,49 @@ export class FollowerEngine {
       markSkip();
       logger.warn({ wallet: trade.wallet_address, mint: trade.token_mint, reason }, "follower: entry skipped");
     }
+  }
+
+  private circuitBreakerReason(walletAddress: string, now: number): string | null {
+    const entries = this.db
+      .prepare("SELECT COUNT(*) AS count FROM follower_positions WHERE wallet_address = ? AND opened_at > ?")
+      .get(walletAddress, now - 86_400) as { count: number };
+    if (entries.count >= BREAKER_MAX_ENTRIES_24H) {
+      return `${entries.count} entries in 24h (max ${BREAKER_MAX_ENTRIES_24H})`;
+    }
+    const recent = this.db
+      .prepare(
+        `SELECT exit_reason FROM follower_positions
+         WHERE wallet_address = ? AND status = 'CLOSED'
+         ORDER BY closed_at DESC, id DESC LIMIT ?`
+      )
+      .all(walletAddress, BREAKER_MAX_CONSECUTIVE_STOPS) as { exit_reason: string }[];
+    if (recent.length === BREAKER_MAX_CONSECUTIVE_STOPS && recent.every((row) => row.exit_reason === "STOP_LOSS")) {
+      return `${BREAKER_MAX_CONSECUTIVE_STOPS} consecutive stop-losses`;
+    }
+    return null;
+  }
+
+  private markSkipped(signalId: number, executionId: number, reason: string, requestedAt: number, respondedAt: number): void {
+    this.db
+      .prepare("UPDATE follower_executions SET status = 'SKIPPED', reason = ?, quote_responded_at = ?, closed_at = ? WHERE id = ?")
+      .run(reason, respondedAt, respondedAt, executionId);
+    this.db
+      .prepare("UPDATE follower_signals SET status = 'SKIPPED', skip_reason = ?, quote_requested_at = ?, quote_responded_at = ? WHERE id = ?")
+      .run(reason, requestedAt, respondedAt, signalId);
+  }
+
+  private tripCircuitBreaker(trade: TradeRow, recipe: RecipeRow, webhookReceivedAt: number, reason: string): void {
+    this.wallets.update(trade.wallet_address, { state: "DORMANT", active: false });
+    this.createSkippedSignal(trade, recipe, webhookReceivedAt, "CIRCUIT_BREAKER");
+    logger.warn({ wallet: trade.wallet_address, reason }, "follower: circuit breaker tripped — wallet marked DORMANT");
+    void this.alerts?.send({
+      embeds: [{
+        title: "⛔ Follower Circuit Breaker",
+        description: `Wallet \`${trade.wallet_address.substring(0, 8)}…\` marked DORMANT: ${reason}. Manual revive required.`,
+        color: 0xff3366,
+        timestamp: new Date().toISOString()
+      }]
+    }, "CRITICAL").catch(() => {});
   }
 
   private createSignal(trade: TradeRow, recipe: RecipeRow, webhookReceivedAt: number): number {

@@ -63,7 +63,7 @@ async function main(): Promise<void> {
   const tokens = new TokenModel(db);
   const resolver = new TokenResolver(tokens);
   const engine = new ConvergenceEngine(trades, convergences, wallets, tokens, resolver, db);
-  const follower = new FollowerEngine({ db, wallets, swaps: jupiterClient });
+  const follower = new FollowerEngine({ db, wallets, swaps: jupiterClient, alerts: new DiscordAlerter() });
   const pinnedWallets = wallets.listPinned();
   logger.info(
     { pinned: pinnedWallets.map((wallet) => wallet.address), count: pinnedWallets.length },

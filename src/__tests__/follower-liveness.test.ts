@@ -27,6 +27,20 @@ describe("follower liveness gate", () => {
     expect(result.reason).toMatch(/72h/i);
   });
 
+  it("refuses bot-regime wallets whose 7d cadence exceeds the follow ceiling", async () => {
+    const now = 2_000_000;
+    // 91 buys over the last 7 days → 13/day, above the 12/day ceiling.
+    const buys = Array.from({ length: 91 }, (_, index) => ({
+      signature: `sig-${index}`,
+      blockTime: now - (index % 7) * 24 * 60 * 60 - 60
+    }));
+
+    const result = await evaluateFollowerCandidate({ address: "wallet-a", now, fetchBuys: async () => buys });
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toMatch(/cadence too high/i);
+  });
+
   it("accepts wallets with recent cadence and projected validation volume", async () => {
     const now = 2_000_000;
     const buys = Array.from({ length: 16 }, (_, index) => ({

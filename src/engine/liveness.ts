@@ -19,6 +19,7 @@ export async function evaluateFollowerCandidate(input: {
   minBuys7d?: number;
   minBuys14d?: number;
   minProjectedClosedTrades28d?: number;
+  maxBuysPerDay?: number;
   fetchBuys(address: string, sinceBlockTime: number): Promise<CandidateBuy[]>;
 }): Promise<LivenessResult> {
   const now = input.now ?? Math.floor(Date.now() / 1000);
@@ -33,6 +34,14 @@ export async function evaluateFollowerCandidate(input: {
   const projectedClosedTrades28d = buys7d * 4;
   const metrics = { buys72h, buys7d, buys14d, projectedClosedTrades28d };
 
+  // Ceiling, not just floors: a high-frequency bot passes every floor and is
+  // unfollowable — each of its buys costs a full notional entry, and the live
+  // follower circuit-breaks at 12 entries/24h anyway (observed 2026-07-12:
+  // 8aKGXJkq at 200+ buys/day bled -55k paper in a night).
+  const maxBuysPerDay = input.maxBuysPerDay ?? 12;
+  if (buys7d / 7 > maxBuysPerDay) {
+    return { allowed: false, reason: `BUY cadence too high to follow (${(buys7d / 7).toFixed(1)}/day > ${maxBuysPerDay}/day — bot regime)`, metrics };
+  }
   if (buys72h === 0) return { allowed: false, reason: "No qualifying BUY in the last 72h", metrics };
   if (buys7d < minBuys7d) return { allowed: false, reason: `BUY cadence too low over 7d (${buys7d} < ${minBuys7d})`, metrics };
   if (buys14d < minBuys14d) return { allowed: false, reason: `BUY cadence too low over 14d (${buys14d} < ${minBuys14d})`, metrics };
