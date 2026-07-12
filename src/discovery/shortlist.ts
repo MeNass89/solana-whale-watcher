@@ -36,8 +36,11 @@ const IGNORED_MINTS = new Set([
   "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" // USDT
 ]);
 
-/** Per-wallet harvest budget: page up to this many signatures... */
-const MAX_SIG_PAGES = 10;
+/** Per-wallet harvest budget: page up to this many signatures...
+ * 40 pages (~40k sigs) so busy wallets still reach the full 30d window —
+ * at 10 pages their sample truncated to the most recent days, which
+ * flattered the backtest (recent regime only). */
+const MAX_SIG_PAGES = 40;
 /** ...and parse at most this many txs, stopping early at MAX_TOKENS. */
 const MAX_PARSED_TXS = 5000;
 const MAX_TOKENS_PER_WALLET = 220;
