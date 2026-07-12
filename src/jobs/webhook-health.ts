@@ -82,6 +82,10 @@ export async function checkWebhookHealth(
 }
 
 function isDisabled(webhook: { webhookType?: string } & Record<string, unknown>): boolean {
+  // Helius signals auto-disable via active:false + disabledReason
+  // (observed live 2026-07-10: "auto-disabled: 97.4% failure rate over 24h").
+  if (webhook["active"] === false) return true;
+  if (typeof webhook["disabledReason"] === "string" && webhook["disabledReason"].length > 0) return true;
   const status = webhook["status"];
   if (typeof status === "string" && /disabled|inactive|paused/i.test(status)) return true;
   const enabled = webhook["enabled"];

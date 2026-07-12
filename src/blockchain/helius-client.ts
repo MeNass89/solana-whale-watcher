@@ -79,7 +79,11 @@ export class HeliusClient implements IChainMonitor {
         webhookType: "enhanced",
         // Keep the auth header on updates too — a PUT without it strips the
         // header from the registration and re-starves the pipeline.
-        authHeader: config.helius.webhookSecret
+        authHeader: config.helius.webhookSecret,
+        // Helius auto-disables webhooks after sustained delivery failures
+        // (active:false + disabledReason). A PUT without this flag leaves the
+        // webhook disabled even with a fresh URL — every update must re-arm it.
+        active: true
       })
     });
   }
