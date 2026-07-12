@@ -1,6 +1,15 @@
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import type { ITradeEvent, TradeType } from "./types.js";
 
+// Majors/stables are swap legs, never signal targets: a USDC→SOL conversion
+// otherwise parses as a "BUY" of wSOL (observed live 2026-07-12, position 9 —
+// $1000 paper position in wrapped SOL under a memecoin recipe).
+const QUOTE_MINTS = new Set([
+  "So11111111111111111111111111111111111111112", // wSOL
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" // USDT
+]);
+
 const RAPID_REVERSAL_WINDOW_SEC = 60;
 const recentTrades = new Map<string, { tradeType: TradeType; blockTime: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -80,8 +89,8 @@ export function parseEnhancedTransaction(payload: unknown, monitoredWallets: Set
 
 function parseWalletTrade(tx: EnhancedTransaction, wallet: string, solPriceUsd?: number | null): ITradeEvent[] {
   const tokenTransfers = tx.tokenTransfers ?? [];
-  const received = tokenTransfers.filter((transfer) => transfer.toUserAccount === wallet && transfer.mint);
-  const sent = tokenTransfers.filter((transfer) => transfer.fromUserAccount === wallet && transfer.mint);
+  const received = tokenTransfers.filter((transfer) => transfer.toUserAccount === wallet && transfer.mint && !QUOTE_MINTS.has(transfer.mint));
+  const sent = tokenTransfers.filter((transfer) => transfer.fromUserAccount === wallet && transfer.mint && !QUOTE_MINTS.has(transfer.mint));
   const solReceived = sumLamports((tx.nativeTransfers ?? []).filter((transfer) => transfer.toUserAccount === wallet));
   const solSent = sumLamports((tx.nativeTransfers ?? []).filter((transfer) => transfer.fromUserAccount === wallet));
 
