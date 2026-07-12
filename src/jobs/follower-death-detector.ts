@@ -21,7 +21,12 @@ export function checkFollowerWalletDeaths(
          WHERE wallet_address = ? AND trade_type = 'BUY'`
       )
       .get(wallet.address) as { lastBuy: number | null };
-    if (!row.lastBuy || row.lastBuy < cutoff) {
+    // A freshly enrolled wallet has no local trade history yet (ingestion
+    // only starts at enrollment — and can miss days during a webhook outage,
+    // observed live 2026-07-10→12). Grace-period on added_at, otherwise the
+    // first detector run muzzles every new wallet on sight.
+    const lastSeen = row.lastBuy ?? wallet.added_at;
+    if (lastSeen < cutoff) {
       wallets.update(wallet.address, { state: "DORMANT", active: false, monitorPolicy: "pinned" });
       dormant.push(wallet.address);
       logger.warn({ wallet: wallet.address, lastBuy: row.lastBuy, dormantAfterDays: options.dormantAfterDays ?? 4 }, "follower wallet marked DORMANT");
