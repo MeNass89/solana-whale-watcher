@@ -109,4 +109,16 @@ describe("resolveRow", () => {
     store.upsertCandles([candle(FT + 7 * DAY, 1.0, "hour")]); // nothing near ft
     expect(resolveRow(row(), store).outcome).toBe("DEAD");
   });
+
+  it("anchors at last_trade_at, not first_trade_at (no lookahead)", () => {
+    const LT = FT + HOUR; // last wallet traded 1h after the first
+    store.upsertCandles([
+      candle(FT, 1.0, "minute"), // pre-detection price — must NOT be the baseline
+      candle(LT, 2.0, "minute"),
+      candle(LT + 7 * DAY, 2.5, "hour")
+    ]);
+    const res = resolveRow(row({ last_trade_at: LT }), store);
+    expect(res.price_at_detection).toBe(2.0);
+    expect(res.outcome).toBe("WIN"); // 2.5/2.0 = +25%, not 2.5/1.0
+  });
 });

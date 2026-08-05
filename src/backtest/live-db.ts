@@ -78,17 +78,18 @@ export function tokensNeedingCandles(
   db: Database.Database,
   nowTs: number
 ): Map<string, number[]> {
+  // Anchor = last_trade_at (the resolver's t0); COALESCE guards legacy rows.
   const rows = db
     .prepare(
-      `SELECT token_mint, first_trade_at FROM convergences
+      `SELECT token_mint, COALESCE(last_trade_at, first_trade_at) AS anchor_at FROM convergences
        WHERE (outcome = 'BACKFILL' OR outcome = 'PENDING') AND first_trade_at < ?
-       ORDER BY token_mint, first_trade_at`
+       ORDER BY token_mint, anchor_at`
     )
-    .all(nowTs - EIGHT_DAYS) as Array<{ token_mint: string; first_trade_at: number }>;
+    .all(nowTs - EIGHT_DAYS) as Array<{ token_mint: string; anchor_at: number }>;
   const map = new Map<string, number[]>();
   for (const row of rows) {
     const list = map.get(row.token_mint) ?? [];
-    list.push(row.first_trade_at);
+    list.push(row.anchor_at);
     map.set(row.token_mint, list);
   }
   return map;

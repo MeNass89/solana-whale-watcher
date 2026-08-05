@@ -4,12 +4,15 @@
  * candles.
  *
  * Rules (documented in README):
- *  - baseline = minute-candle close nearest first_trade_at (±10 min), hourly
+ *  - anchor t0 = last_trade_at: the convergence is only DETECTABLE when the
+ *    Nth wallet trades (avg first→last gap 58 min); anchoring at
+ *    first_trade_at is lookahead — returns nobody could have captured;
+ *  - baseline = minute-candle close nearest t0 (±10 min), hourly
  *    fallback (±30 min); the stored price_at_detection is IGNORED — for
  *    backlogged rows it was stamped hours/days after detection;
- *  - price_1h  = minute close nearest first_trade_at+1h  (±10 min);
- *  - price_24h = hourly close nearest first_trade_at+24h (±2 h);
- *  - price_7d  = hourly close nearest first_trade_at+7d  (±6 h);
+ *  - price_1h  = minute close nearest t0+1h  (±10 min);
+ *  - price_24h = hourly close nearest t0+24h (±2 h);
+ *  - price_7d  = hourly close nearest t0+7d  (±6 h);
  *  - outcome: WIN if 7d return ≥ +10 %, LOSS if ≤ −20 %, else FLAT;
  *  - token with no candle data at all, or no resolvable baseline/7d price →
  *    DEAD (no liquid market = untradeable).
@@ -69,7 +72,10 @@ export function resolveRow(row: ConvergenceRow, candles: CandleLookup): Resoluti
 
   if (!candles.hasCandles(row.token_mint)) return noUpdate("DEAD");
 
-  const ft = row.first_trade_at;
+  // t0 = last_trade_at: the signal is only knowable once the Nth wallet has
+  // traded. first_trade_at is lookahead (avg gap 58 min — quant audit
+  // 2026-08-05 confirmed this leak inflates measured returns structurally).
+  const ft = row.last_trade_at ?? row.first_trade_at;
   // Baseline MUST come from candles at detection time, never from the stored
   // price_at_detection: for backlogged rows that value was stamped whenever
   // the price tracker first processed the row — hours or days after detection,
