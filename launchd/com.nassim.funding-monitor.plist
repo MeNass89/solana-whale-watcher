@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nassim.funding-monitor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/nassimlecornet/Projects/solana-whale-watcher/node_modules/tsx/dist/cli.mjs</string>
+    <string>/Users/nassimlecornet/Projects/solana-whale-watcher/src/funding/monitor.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/nassimlecornet/Projects/solana-whale-watcher</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/nassimlecornet/Projects/solana-whale-watcher/data/funding-monitor.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/nassimlecornet/Projects/solana-whale-watcher/data/funding-monitor.log</string>
+</dict>
+</plist>
